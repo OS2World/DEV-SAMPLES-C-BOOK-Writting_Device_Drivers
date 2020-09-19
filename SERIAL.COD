@@ -1,0 +1,2990 @@
+;	Static Name Aliases
+;
+	TITLE   serial.c
+	.286p
+	.287
+_TEXT	SEGMENT  WORD PUBLIC 'CODE'
+_TEXT	ENDS
+_DATA	SEGMENT  WORD PUBLIC 'DATA'
+_DATA	ENDS
+CONST	SEGMENT  WORD PUBLIC 'CONST'
+CONST	ENDS
+_BSS	SEGMENT  WORD PUBLIC 'BSS'
+_BSS	ENDS
+DGROUP	GROUP	CONST, _BSS, _DATA
+	ASSUME DS: DGROUP
+	ASSUME  SS: NOTHING
+PUBLIC  _devhdr
+PUBLIC  _DevHlp
+PUBLIC  _appl_buffer
+PUBLIC  _p
+PUBLIC  _err
+PUBLIC  _WriteID
+PUBLIC  _ReadID
+PUBLIC  _ThisReadRP
+PUBLIC  _ThisWriteRP
+PUBLIC  _IntFailMsg
+PUBLIC  _MainMsg
+EXTRN	__acrtused:ABS
+EXTRN	VIRTTOPHYS:NEAR
+EXTRN	UNPHYSTOVIRT:NEAR
+EXTRN	DOSPUTMESSAGE:FAR
+EXTRN	QUEUEINIT:NEAR
+EXTRN	QUEUEFLUSH:NEAR
+EXTRN	QUEUEWRITE:NEAR
+EXTRN	QUEUEREAD:NEAR
+EXTRN	SETIRQ:NEAR
+EXTRN	SETTIMER:NEAR
+EXTRN	_STRAT:NEAR
+EXTRN	_TIM_HNDLR:NEAR
+EXTRN	_INT_HNDLR:NEAR
+EXTRN	ENABLE:NEAR
+EXTRN	DISABLE:NEAR
+EXTRN	ABORT:NEAR
+EXTRN	SEGLIMIT:NEAR
+EXTRN	MOVEBYTES:NEAR
+EXTRN	GETDOSVAR:NEAR
+EXTRN	BLOCK:NEAR
+EXTRN	RUN:NEAR
+EXTRN	VERIFYACCESS:NEAR
+EXTRN	LOCKSEG:NEAR
+EXTRN	UNLOCKSEG:NEAR
+_BSS      SEGMENT
+COMM NEAR	_rx_queue:	BYTE:	 518
+COMM NEAR	_tx_queue:	BYTE:	 518
+COMM NEAR	_lock_seg_han:	BYTE:	 4
+COMM NEAR	_ptr:	BYTE:	 4
+COMM NEAR	_hptr:	BYTE:	 2
+COMM NEAR	_i:	BYTE:	 2
+COMM NEAR	_uart_regs:	BYTE:	 34
+COMM NEAR	_inchar:	BYTE:	 1
+COMM NEAR	_outchar:	BYTE:	 1
+COMM NEAR	_baud_rate:	BYTE:	 2
+COMM NEAR	_savepid:	BYTE:	 2
+COMM NEAR	_opencount:	BYTE:	 1
+COMM NEAR	_tickcount:	BYTE:	 4
+COMM NEAR	_com_error_word:	BYTE:	 2
+COMM NEAR	_port:	BYTE:	 2
+COMM NEAR	_temp_bank:	BYTE:	 2
+COMM NEAR	_rqueue:	BYTE:	 4
+_BSS      ENDS
+_DATA      SEGMENT
+_devhdr	DD	0ffffffffH
+	DW	08880H
+	DW	_STRAT
+	DW	00H
+	DB	'DEVICE1 '
+ 	DB	12 DUP(0)
+
+_DevHlp	DD	00H
+_appl_buffer	DD	00H
+_p	DD	00H
+_err	DW	00H
+_WriteID	DD	00H
+_ReadID	DD	00H
+_ThisReadRP	DD	00H
+_ThisWriteRP	DD	00H
+_IntFailMsg	DB	' interrupt handler failed to install.',  0dH,  0aH,  00H
+_MainMsg	DB	' OS/2 Serial Device Driver V1.0 installed.',  0dH,  0aH,  00H
+_DATA      ENDS
+_TEXT      SEGMENT
+	ASSUME	CS: _TEXT
+;|*** /* file sample.c
+; Line 1
+;|***    sample OS/2 serial device driver
+;|*** */
+;|*** 
+;|*** #include "drvlib.h"
+; Line 5
+;|*** #include "uart.h"
+; Line 6
+;|*** #include "serial.h"
+; Line 7
+;|*** 
+;|*** extern void near STRAT(); /* name of strat rout.*/
+;|*** extern void near TIM_HNDLR(); /* timer handler  */
+;|*** extern int  near INT_HNDLR(); /* interrupt hand */
+;|*** 
+;|*** DEVICEHDR devhdr = {
+;|***  (void far *) 0xFFFFFFFF,  /* link              */
+;|***  (DAW_CHR | DAW_OPN | DAW_LEVEL1),/* attribute  */
+;|***  (OFF) STRAT,              /* &strategy         */
+;|***  (OFF) 0,                  /* &IDCroutine       */
+;|***  "DEVICE1 "
+;|***   };
+;|*** 
+;|*** CHARQUEUE   rx_queue;      /* receiver queue    */
+;|*** CHARQUEUE   tx_queue;      /* transmitter queue */
+;|*** FPFUNCTION  DevHlp=0;      /* for DevHlp calls  */
+;|*** LHANDLE     lock_seg_han;  /* handle for locking*/
+;|*** PHYSADDR    appl_buffer=0; /* address of caller */
+;|*** PREQPACKET  p=0L;          /* Request Packet ptr*/
+;|*** ERRCODE     err=0;         /* error return      */
+;|*** void        far *ptr;      /* temp far pointer  */
+;|*** DEVICEHDR   *hptr;         /* pointer to Device */
+;|*** USHORT      i;             /* general counter   */
+;|*** UARTREGS    uart_regs;     /* uart registers    */
+;|*** ULONG       WriteID=0L;    /* ID for write Block*/
+;|*** ULONG       ReadID=0L;     /* ID for read Block */
+;|*** PREQPACKET  ThisReadRP=0L; /* for read Request  */
+;|*** PREQPACKET  ThisWriteRP=0L;/* for write Request */
+;|*** char        inchar,outchar;/* temp chars        */
+;|*** USHORT      baud_rate;     /* current baud rate */
+;|*** unsigned    int savepid;   /* PID of driver own */
+;|*** UCHAR       opencount;     /* number of times   */
+;|*** ULONG       tickcount;     /* for timeouts      */
+;|*** unsigned    int com_error_word; /* UART status  */
+;|*** USHORT      port;          /* port variable     */
+;|*** USHORT      temp_bank;     /* holds UART bank   */
+;|*** QUEUE       rqueue;        /* receive queue info*/
+;|*** 
+;|*** void near init();
+;|*** void near enable_write();
+;|*** void near disable_write();
+;|*** void near set_dlab();
+;|*** void near reset_dlab();
+;|*** void near config_82050();
+;|*** 
+;|*** char   IntFailMsg[] = " interrupt handler failed to install.\r\n";
+;|*** char   MainMsg[] = " OS/2 Serial Device Driver V1.0 installed.\r\n";
+;|*** 
+;|*** /* common entry point to strat routines */
+;|*** 
+;|*** int main(PREQPACKET rp, int dev )
+;|*** {
+; Line 59
+	PUBLIC	_main
+_main	PROC NEAR
+	*** 000000	c8 08 00 00 		enter	8,0
+	*** 000004	57 			push	di
+	*** 000005	56 			push	si
+;	rp = 4
+;	dev = 8
+;	ptr = -8
+;	pptr = -4
+;	liptr = -4
+;	register si = i
+;	addr = -4
+	*** 000006	c4 7e 04 		les	di,DWORD PTR [bp+4]	;rp
+;|***    void far *ptr;
+;|***    int far *pptr;
+;|***    PLINFOSEG liptr;    /* pointer to local info */
+;|***    int i;
+;|***    ULONG addr;
+;|*** 
+;|***    switch(rp->RPcommand)
+; Line 66
+	*** 000009	26 8a 45 02 		mov	al,BYTE PTR es:[di+2]
+	*** 00000d	2a e4 			sub	ah,ah
+;|***     {
+;|***     case RPINIT:       /* 0x00                  */
+;|*** 
+;|***         /* init called by kernel in prot mode */
+;|*** 
+;|***         return Init(rp,dev);
+;|*** 
+;|***     case RPOPEN:       /* 0x0d                  */
+;|*** 
+;|***         /* get current processes id */
+;|*** 
+;|***         if (GetDOSVar(2,&ptr))
+;|***             return (RPDONE|RPERR|ERROR_BAD_COMMAND);
+;|*** 
+;|***         /* get process info */
+;|*** 
+;|***         liptr = *((PLINFOSEG far *) ptr);
+;|*** 
+;|***         /* if this device never opened */
+;|*** 
+;|***         if (opencount == 0) /* 1st time dev op'd*/
+;|***         {
+;|***             ThisReadRP=0L;
+;|***             ThisWriteRP=0L;
+;|***             opencount=1;  /* set open counter   */
+;|***             savepid = liptr->pidCurrent; /* PID */
+;|***             QueueInit(&rx_queue);/* init driver */
+;|***             QueueInit(&tx_queue);
+;|***         }
+;|***         else
+;|***             {
+;|***             if (savepid != liptr->pidCurrent)
+;|***                 return (RPDONE | RPERR | RPBUSY );
+;|***             ++opencount;       /* bump counter  */
+;|***         }
+;|***         return (RPDONE);
+;|*** 
+;|***     case RPCLOSE:        /* 0x0e                */
+;|*** 
+;|***         /* get process info of caller */
+;|*** 
+;|***         if (GetDOSVar(2,&ptr))
+;|***             return (RPDONE|RPERR|ERROR_BAD_COMMAND); /* no info  */
+;|*** 
+;|***         /* get process info from os/2 */
+;|*** 
+;|***         liptr= *((PLINFOSEG far *) ptr); /* PID */
+;|***         if (savepid != liptr->pidCurrent ||
+;|***            opencount == 0)
+;|***         return (RPDONE|RPERR|ERROR_BAD_COMMAND);
+;|***         --opencount;   /* close counts down open*/
+;|*** 
+;|***         if (ThisReadRP !=0 && opencount == 0) {
+;|***             Run((ULONG) ThisReadRP); /* dangling*/
+;|***             ThisReadRP=0L;
+;|***         }
+;|***         return (RPDONE);     /* return 'done'   */
+;|*** 
+;|***     case RPREAD:             /* 0x04            */
+;|*** 
+;|***         /*  Try to read a character */
+;|*** 
+;|***         ThisReadRP = rp;
+;|***         if (opencount == 0)/* drvr was closed   */
+;|***         {
+;|***             rp->s.ReadWrite.count = 0;  /* EOF  */
+;|***             return(RPDONE);
+;|***         }
+;|***         com_error_word=0;/* start off no errors */
+;|***         ReadID = (ULONG) rp;
+;|***         if (Block(ReadID, -1L, 0, &err))
+;|***             if (err == 2)       /* interrupted  */
+;|***                return(RPDONE|RPERR|ERROR_CHAR_CALL_INTERRUPTED);
+;|*** 
+;|***         if (rx_queue.qcount == 0) {
+;|***            rp->s.ReadWrite.count=0;
+;|***            return (RPDONE|RPERR|ERROR_NOT_READY);
+;|***            }
+;|*** 
+;|***         i=0;
+;|***         do {
+;|***           if (MoveBytes((FARPOINTER)&inchar,
+;|***           (FARPOINTER) (rp->s.ReadWrite.buffer+i),
+;|***           1))
+;|***             return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|***             }
+;|***         while (++i < rp->s.ReadWrite.count
+;|***             && !QueueRead(&rx_queue,&inchar));
+;|***         rp->s.ReadWrite.count = i;
+;|***         QueueInit(&rx_queue);
+;|***         return(rp->RPstatus);
+;|*** 
+;|***     case RPWRITE:        /* 0x08                */
+;|*** 
+;|***         ThisWriteRP = rp;
+;|*** 
+;|***         /* transfer characters from user buffer */
+;|*** 
+;|***         addr=rp->s.ReadWrite.buffer;/* get addr */
+;|***         for (i = rp->s.ReadWrite.count; i; --i,++addr)
+;|***         {
+;|***           if (MoveBytes((FARPOINTER)addr,
+;|***               (FARPOINTER)&outchar,1))
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***           if (QueueWrite(&tx_queue,outchar))
+;|***               return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|***           }
+;|***         WriteID = (ULONG) rp;
+;|***         enable_write();
+;|*** 
+;|***         if (Block(WriteID, -1L, 0, &err))
+;|***             if (err == 2)   /* interrupted      */
+;|***                 return(RPDONE|RPERR|ERROR_CHAR_CALL_INTERRUPTED);
+;|*** 
+;|***         tickcount=MIN_TIMEOUT; /* reset timeout */
+;|***         QueueInit(&tx_queue);
+;|***         return (rp->RPstatus);
+;|*** 
+;|***     case RPINPUT_FLUSH:      /* 0x07            */
+;|*** 
+;|***         QueueFlush(&rx_queue);
+;|***         return (RPDONE);
+;|*** 
+;|***     case RPOUTPUT_FLUSH:     /* 0x0b            */
+;|*** 
+;|***         QueueFlush(&tx_queue);
+;|***         return (RPDONE);
+;|*** 
+;|***     case RPIOCTL:            /* 0x10            */
+;|*** 
+;|***         if (!((rp->s.IOCtl.category == SAMPLE_CAT)
+;|***            || (rp->s.IOCtl.category == 0x01)))
+;|***               return (RPDONE);
+;|*** 
+;|***         switch (rp->s.IOCtl.function)
+;|***         {
+;|***         case 0x41:    /* set baud rate          */
+;|***         /* set baud rate to 1.2, 2.4, 9.6, 19.2 */
+;|***         /* verify caller owns the buffer area   */
+;|*** 
+;|***         if(VerifyAccess(
+;|***          SELECTOROF(rp->s.IOCtl.parameters),
+;|***          OFFSETOF(rp->s.IOCtl.parameters),
+;|***          2,             /* two bytes            */
+;|***          1) )           /* read/write           */
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          /* lock the segment down temp */
+;|*** 
+;|***          if(LockSeg(
+;|***          SELECTOROF(rp->s.IOCtl.parameters),
+;|***          0,          /* lock for < 2 sec      */
+;|***          0,          /* wait for seg lock     */
+;|***          (PLHANDLE) &lock_seg_han)) /* handle */
+;|***              return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          /* get physical address of buffer */
+;|***          if (VirtToPhys(
+;|***          (FARPOINTER) rp->s.IOCtl.parameters,
+;|***          (FARPOINTER) &appl_buffer))
+;|***              return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          /* move data to local driver buffer */
+;|*** 
+;|***          if(MoveBytes(
+;|***          (FARPOINTER) appl_buffer,  /* source             */
+;|***          (FARPOINTER)&baud_rate,    /* destination        */
+;|***          2))                        /* 2 bytes            */
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          if (UnPhysToVirt()) /* release selector*/
+;|***                 return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          /* unlock segment */
+;|*** 
+;|***          if(UnLockSeg(lock_seg_han))
+;|***               return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          switch (baud_rate)
+;|***             {
+;|***             case 1200:
+;|*** 
+;|***                 uart_regs.Bal=0xe0;
+;|***                 uart_regs.Bah=0x01;
+;|***                 break;
+;|*** 
+;|***             case 2400:
+;|*** 
+;|***                 uart_regs.Bal=0xf0;
+;|***                 uart_regs.Bah=0x00;
+;|***                 break;
+;|*** 
+;|***             case 9600:
+;|*** 
+;|***                 uart_regs.Bal=0x3c;
+;|***                 uart_regs.Bah=0x00;
+;|***                 break;
+;|*** 
+;|***             case 19200:
+;|*** 
+;|***                 uart_regs.Bal=0x1e;
+;|***                 uart_regs.Bah=0x00;
+;|***                 break;
+;|*** 
+;|***             case 38400:
+;|*** 
+;|***                 uart_regs.Bal=0x0f;
+;|***                 uart_regs.Bah=0x00;
+;|***                 break;
+;|*** 
+;|*** error:
+;|***             return (RPDONE|RPERR|ERROR_BAD_COMMAND);
+;|*** 
+;|***             }
+;|***             init();      /* reconfigure uart    */
+;|***             return (RPDONE);
+;|*** 
+;|***         case 0x68:       /* get number of chars */
+;|*** 
+;|***             /* verify caller owns the buffer    */
+;|*** 
+;|***             if(VerifyAccess(
+;|***             SELECTOROF(rp->s.IOCtl.buffer),
+;|***             OFFSETOF(rp->s.IOCtl.buffer),
+;|***             4,            /* 4 bytes            */
+;|***             1) )          /* read/write         */
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* lock the segment down temp */
+;|*** 
+;|***             if(LockSeg(
+;|***             SELECTOROF(rp->s.IOCtl.buffer),
+;|***             0,           /* lock for < 2 sec    */
+;|***             0,           /* wait for seg lock   */
+;|***             (PLHANDLE) &lock_seg_han)) /* handle*/
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* get physical address of buffer */
+;|*** 
+;|***             if (VirtToPhys(
+;|***             (FARPOINTER) rp->s.IOCtl.buffer,
+;|***             (FARPOINTER) &appl_buffer))
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             rqueue.cch=rx_queue.qcount;
+;|***             rqueue.cb=rx_queue.qsize;
+;|*** 
+;|***             /* move data to local driver buffer */
+;|*** 
+;|***             if(MoveBytes(
+;|***             (FARPOINTER)&rx_queue,  /* source   */
+;|***             (FARPOINTER) appl_buffer, /* dest   */
+;|***             4))          /* 4 bytes             */
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             if (UnPhysToVirt())
+;|***                 return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* unlock segment */
+;|*** 
+;|***             if(UnLockSeg(lock_seg_han))
+;|***                 return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             return (RPDONE);
+;|*** 
+;|***         case 0x6d:    /* get COM error info     */
+;|*** 
+;|***             /* verify caller owns the buffer    */
+;|*** 
+;|***             if(VerifyAccess(
+;|***             SELECTOROF(rp->s.IOCtl.buffer),
+;|***             OFFSETOF(rp->s.IOCtl.buffer),
+;|***             2,        /* two bytes              */
+;|***             1) )      /* read/write             */
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* lock the segment down temp */
+;|*** 
+;|***             if(LockSeg(
+;|***             SELECTOROF(rp->s.IOCtl.buffer),
+;|***             0,        /* lock for < 2 sec       */
+;|***             0,        /* wait for seg lock      */
+;|***             (PLHANDLE) &lock_seg_han)) /* handle*/
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* get physical address of buffer */
+;|*** 
+;|***             if (VirtToPhys(
+;|***             (FARPOINTER) rp->s.IOCtl.buffer,
+;|***             (FARPOINTER) &appl_buffer))
+;|***                return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* move data to application buffer */
+;|*** 
+;|***             if(MoveBytes(
+;|***             (FARPOINTER)&com_error_word, /* source */
+;|***             (FARPOINTER) appl_buffer, /* dest  */
+;|***             2))       /* 2 bytes               */
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             if (UnPhysToVirt())
+;|***                 return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* unlock segment */
+;|*** 
+;|***             if(UnLockSeg(lock_seg_han))
+;|***                 return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             return (RPDONE);
+;|*** 
+;|***         default:
+;|***             return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|***         }
+;|*** 
+;|***         /* don't allow deinstall */
+;|*** 
+;|***     case RPDEINSTALL:  /* 0x14                  */
+;|***         return(RPDONE|RPERR|ERROR_BAD_COMMAND);
+;|*** 
+;|***     /* all other commands are ignored */
+;|*** 
+;|***     default:
+;|***         return(RPDONE);
+;|*** 
+;|***     }
+; Line 392
+	*** 00000f	3d 14 00 		cmp	ax,20
+	*** 000012	77 32 			ja	$SD468
+	*** 000014	d1 e0 			shl	ax,1
+	*** 000016	93 			xchg	ax,bx
+	*** 000017	2e ff a7 1c 00 		jmp	WORD PTR cs:$L20006[bx]
+					$L20006:
+	*** 00001c	4c 00 				DW	$SC397
+	*** 00001e	46 00 				DW	$SD468
+	*** 000020	46 00 				DW	$SD468
+	*** 000022	46 00 				DW	$SD468
+	*** 000024	5c 00 				DW	$SC409
+	*** 000026	46 00 				DW	$SD468
+	*** 000028	46 00 				DW	$SD468
+	*** 00002a	0e 01 				DW	$SC427
+	*** 00002c	18 01 				DW	$SC419
+	*** 00002e	46 00 				DW	$SD468
+	*** 000030	46 00 				DW	$SD468
+	*** 000032	b6 01 				DW	$SC428
+	*** 000034	46 00 				DW	$SD468
+	*** 000036	bc 01 				DW	$SC399
+	*** 000038	28 02 				DW	$SC404
+	*** 00003a	46 00 				DW	$SD468
+	*** 00003c	84 02 				DW	$SC429
+	*** 00003e	46 00 				DW	$SD468
+	*** 000040	46 00 				DW	$SD468
+	*** 000042	46 00 				DW	$SD468
+	*** 000044	52 04 				DW	$SC467
+;|***     default:
+; Line 389
+					$SD468:
+;|***         return(RPDONE);
+; Line 390
+	*** 000046	b8 00 01 		mov	ax,256
+	*** 000049	e9 09 04 		jmp	$EX387
+;|***     case RPINIT:       /* 0x00                  */
+; Line 68
+					$SC397:
+;|*** 
+;|***         /* init called by kernel in prot mode */
+;|*** 
+;|***         return Init(rp,dev);
+; Line 72
+	*** 00004c	ff 76 08 		push	WORD PTR [bp+8]	;dev
+	*** 00004f	8c c0 			mov	ax,es
+	*** 000051	50 			push	ax
+	*** 000052	57 			push	di
+	*** 000053	e8 00 00 		call	_Init
+	*** 000056	83 c4 06 		add	sp,6
+	*** 000059	e9 f9 03 		jmp	$EX387
+;|*** 
+;|***     case RPOPEN:       /* 0x0d                  */
+;|*** 
+;|***         /* get current processes id */
+;|*** 
+;|***         if (GetDOSVar(2,&ptr))
+;|***             return (RPDONE|RPERR|ERROR_BAD_COMMAND);
+;|*** 
+;|***         /* get process info */
+;|*** 
+;|***         liptr = *((PLINFOSEG far *) ptr);
+;|*** 
+;|***         /* if this device never opened */
+;|*** 
+;|***         if (opencount == 0) /* 1st time dev op'd*/
+;|***         {
+;|***             ThisReadRP=0L;
+;|***             ThisWriteRP=0L;
+;|***             opencount=1;  /* set open counter   */
+;|***             savepid = liptr->pidCurrent; /* PID */
+;|***             QueueInit(&rx_queue);/* init driver */
+;|***             QueueInit(&tx_queue);
+;|***         }
+;|***         else
+;|***             {
+;|***             if (savepid != liptr->pidCurrent)
+;|***                 return (RPDONE | RPERR | RPBUSY );
+;|***             ++opencount;       /* bump counter  */
+;|***         }
+;|***         return (RPDONE);
+;|*** 
+;|***     case RPCLOSE:        /* 0x0e                */
+;|*** 
+;|***         /* get process info of caller */
+;|*** 
+;|***         if (GetDOSVar(2,&ptr))
+;|***             return (RPDONE|RPERR|ERROR_BAD_COMMAND); /* no info  */
+;|*** 
+;|***         /* get process info from os/2 */
+;|*** 
+;|***         liptr= *((PLINFOSEG far *) ptr); /* PID */
+;|***         if (savepid != liptr->pidCurrent ||
+;|***            opencount == 0)
+;|***         return (RPDONE|RPERR|ERROR_BAD_COMMAND);
+;|***         --opencount;   /* close counts down open*/
+;|*** 
+;|***         if (ThisReadRP !=0 && opencount == 0) {
+;|***             Run((ULONG) ThisReadRP); /* dangling*/
+;|***             ThisReadRP=0L;
+;|***         }
+;|***         return (RPDONE);     /* return 'done'   */
+;|*** 
+;|***     case RPREAD:             /* 0x04            */
+; Line 125
+					$SC409:
+;|*** 
+;|***         /*  Try to read a character */
+;|*** 
+;|***         ThisReadRP = rp;
+; Line 129
+	*** 00005c	89 3e 34 00 		mov	WORD PTR _ThisReadRP,di
+	*** 000060	8c 06 36 00 		mov	WORD PTR _ThisReadRP+2,es
+;|***         if (opencount == 0)/* drvr was closed   */
+; Line 130
+	*** 000064	80 3e 00 00 00 		cmp	BYTE PTR _opencount,0
+	*** 000069	75 09 			jne	$I410
+;|***         {
+;|***             rp->s.ReadWrite.count = 0;  /* EOF  */
+; Line 132
+	*** 00006b	26 c7 45 12 00 00 	mov	WORD PTR es:[di+18],0
+	*** 000071	eb d3 			jmp	SHORT $SD468
+	*** 000073	90 			nop	
+;|***             return(RPDONE);
+;|***         }
+;|***         com_error_word=0;/* start off no errors */
+; Line 135
+					$I410:
+	*** 000074	c7 06 00 00 00 00 	mov	WORD PTR _com_error_word,0
+;|***         ReadID = (ULONG) rp;
+; Line 136
+	*** 00007a	8b c7 			mov	ax,di
+	*** 00007c	8b 56 06 		mov	dx,WORD PTR [bp+6]
+	*** 00007f	a3 30 00 		mov	WORD PTR _ReadID,ax
+	*** 000082	89 16 32 00 		mov	WORD PTR _ReadID+2,dx
+;|***         if (Block(ReadID, -1L, 0, &err))
+; Line 137
+	*** 000086	52 			push	dx
+	*** 000087	50 			push	ax
+	*** 000088	6a ff 			push	-1
+	*** 00008a	6a ff 			push	-1
+	*** 00008c	6a 00 			push	0
+	*** 00008e	1e 			push	ds
+	*** 00008f	68 2a 00 		push	OFFSET DGROUP:_err
+	*** 000092	e8 00 00 		call	BLOCK
+	*** 000095	0b c0 			or	ax,ax
+	*** 000097	74 0f 			je	$I411
+;|***             if (err == 2)       /* interrupted  */
+; Line 138
+	*** 000099	83 3e 2a 00 02 		cmp	WORD PTR _err,2
+	*** 00009e	75 08 			jne	$I411
+;|***                return(RPDONE|RPERR|ERROR_CHAR_CALL_INTERRUPTED);
+; Line 139
+					$L20011:
+	*** 0000a0	b8 11 81 		mov	ax,-32495
+	*** 0000a3	5e 			pop	si
+	*** 0000a4	5f 			pop	di
+	*** 0000a5	c9 			leave	
+	*** 0000a6	c3 			ret	
+	*** 0000a7	90 			nop	
+;|*** 
+;|***         if (rx_queue.qcount == 0) {
+; Line 141
+					$I411:
+	*** 0000a8	83 3e 04 00 00 		cmp	WORD PTR _rx_queue+4,0
+	*** 0000ad	75 11 			jne	$I413
+;|***            rp->s.ReadWrite.count=0;
+; Line 142
+	*** 0000af	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 0000b2	26 c7 45 12 00 00 	mov	WORD PTR es:[di+18],0
+;|***            return (RPDONE|RPERR|ERROR_NOT_READY);
+; Line 143
+	*** 0000b8	b8 02 81 		mov	ax,-32510
+	*** 0000bb	5e 			pop	si
+	*** 0000bc	5f 			pop	di
+	*** 0000bd	c9 			leave	
+	*** 0000be	c3 			ret	
+	*** 0000bf	90 			nop	
+;|***            }
+;|*** 
+;|***         i=0;
+; Line 146
+					$I413:
+	*** 0000c0	2b f6 			sub	si,si
+;|***         do {
+; Line 147
+					$D414:
+;|***           if (MoveBytes((FARPOINTER)&inchar,
+;|***           (FARPOINTER) (rp->s.ReadWrite.buffer+i),
+;|***           1))
+; Line 150
+	*** 0000c2	1e 			push	ds
+	*** 0000c3	68 00 00 		push	OFFSET DGROUP:_inchar
+	*** 0000c6	8b c6 			mov	ax,si
+	*** 0000c8	99 			cwd	
+	*** 0000c9	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 0000cc	26 03 45 0e 		add	ax,WORD PTR es:[di+14]
+	*** 0000d0	26 13 55 10 		adc	dx,WORD PTR es:[di+16]
+	*** 0000d4	52 			push	dx
+	*** 0000d5	50 			push	ax
+	*** 0000d6	6a 01 			push	1
+	*** 0000d8	e8 00 00 		call	MOVEBYTES
+	*** 0000db	0b c0 			or	ax,ax
+	*** 0000dd	74 03 			je	$JCC221
+	*** 0000df	e9 ce 01 		jmp	$L20002
+					$JCC221:
+;|***             return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|***             }
+;|***         while (++i < rp->s.ReadWrite.count
+;|***             && !QueueRead(&rx_queue,&inchar));
+; Line 154
+	*** 0000e2	46 			inc	si
+	*** 0000e3	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 0000e6	26 39 75 12 		cmp	WORD PTR es:[di+18],si
+	*** 0000ea	76 0e 			jbe	$D418
+	*** 0000ec	68 00 00 		push	OFFSET DGROUP:_rx_queue
+	*** 0000ef	1e 			push	ds
+	*** 0000f0	68 00 00 		push	OFFSET DGROUP:_inchar
+	*** 0000f3	e8 00 00 		call	QUEUEREAD
+	*** 0000f6	0b c0 			or	ax,ax
+	*** 0000f8	74 c8 			je	$D414
+					$D418:
+;|***         rp->s.ReadWrite.count = i;
+; Line 155
+	*** 0000fa	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 0000fd	26 89 75 12 		mov	WORD PTR es:[di+18],si
+;|***         QueueInit(&rx_queue);
+; Line 156
+	*** 000101	68 00 00 		push	OFFSET DGROUP:_rx_queue
+	*** 000104	8c c6 			mov	si,es
+	*** 000106	e8 00 00 		call	QUEUEINIT
+;|***         return(rp->RPstatus);
+; Line 157
+	*** 000109	8e c6 			mov	es,si
+	*** 00010b	e9 9f 00 		jmp	$L20014
+;|*** 
+;|***     case RPWRITE:        /* 0x08                */
+;|*** 
+;|***         ThisWriteRP = rp;
+;|*** 
+;|***         /* transfer characters from user buffer */
+;|*** 
+;|***         addr=rp->s.ReadWrite.buffer;/* get addr */
+;|***         for (i = rp->s.ReadWrite.count; i; --i,++addr)
+;|***         {
+;|***           if (MoveBytes((FARPOINTER)addr,
+;|***               (FARPOINTER)&outchar,1))
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***           if (QueueWrite(&tx_queue,outchar))
+;|***               return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|***           }
+;|***         WriteID = (ULONG) rp;
+;|***         enable_write();
+;|*** 
+;|***         if (Block(WriteID, -1L, 0, &err))
+;|***             if (err == 2)   /* interrupted      */
+;|***                 return(RPDONE|RPERR|ERROR_CHAR_CALL_INTERRUPTED);
+;|*** 
+;|***         tickcount=MIN_TIMEOUT; /* reset timeout */
+;|***         QueueInit(&tx_queue);
+;|***         return (rp->RPstatus);
+;|*** 
+;|***     case RPINPUT_FLUSH:      /* 0x07            */
+; Line 186
+					$SC427:
+;|*** 
+;|***         QueueFlush(&rx_queue);
+; Line 188
+	*** 00010e	68 00 00 		push	OFFSET DGROUP:_rx_queue
+					$L20013:
+	*** 000111	e8 00 00 		call	QUEUEFLUSH
+	*** 000114	e9 2f ff 		jmp	$SD468
+	*** 000117	90 			nop	
+;|***     case RPWRITE:        /* 0x08                */
+; Line 159
+					$SC419:
+;|*** 
+;|***         ThisWriteRP = rp;
+; Line 161
+	*** 000118	89 3e 38 00 		mov	WORD PTR _ThisWriteRP,di
+	*** 00011c	8c 06 3a 00 		mov	WORD PTR _ThisWriteRP+2,es
+;|*** 
+;|***         /* transfer characters from user buffer */
+;|*** 
+;|***         addr=rp->s.ReadWrite.buffer;/* get addr */
+; Line 165
+	*** 000120	26 8b 45 0e 		mov	ax,WORD PTR es:[di+14]
+	*** 000124	26 8b 55 10 		mov	dx,WORD PTR es:[di+16]
+	*** 000128	89 46 fc 		mov	WORD PTR [bp-4],ax	;pptr
+	*** 00012b	89 56 fe 		mov	WORD PTR [bp-2],dx
+;|***         for (i = rp->s.ReadWrite.count; i; --i,++addr)
+; Line 166
+	*** 00012e	26 8b 75 12 		mov	si,WORD PTR es:[di+18]
+	*** 000132	0b f6 			or	si,si
+	*** 000134	74 32 			je	$FB422
+					$F420:
+;|***         {
+;|***           if (MoveBytes((FARPOINTER)addr,
+;|***               (FARPOINTER)&outchar,1))
+; Line 169
+	*** 000136	ff 76 fe 		push	WORD PTR [bp-2]
+	*** 000139	ff 76 fc 		push	WORD PTR [bp-4]	;pptr
+	*** 00013c	1e 			push	ds
+	*** 00013d	68 00 00 		push	OFFSET DGROUP:_outchar
+	*** 000140	6a 01 			push	1
+	*** 000142	e8 00 00 		call	MOVEBYTES
+	*** 000145	0b c0 			or	ax,ax
+	*** 000147	74 03 			je	$JCC327
+	*** 000149	e9 64 01 		jmp	$L20002
+					$JCC327:
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***           if (QueueWrite(&tx_queue,outchar))
+; Line 172
+	*** 00014c	68 00 00 		push	OFFSET DGROUP:_tx_queue
+	*** 00014f	a0 00 00 		mov	al,BYTE PTR _outchar
+	*** 000152	50 			push	ax
+	*** 000153	e8 00 00 		call	QUEUEWRITE
+	*** 000156	0b c0 			or	ax,ax
+	*** 000158	74 03 			je	$JCC344
+	*** 00015a	e9 53 01 		jmp	$L20002
+					$JCC344:
+;|***         for (i = rp->s.ReadWrite.count; i; --i,++addr)
+; Line 166
+	*** 00015d	83 46 fc 01 		add	WORD PTR [bp-4],1	;pptr
+	*** 000161	83 56 fe 00 		adc	WORD PTR [bp-2],0
+	*** 000165	4e 			dec	si
+	*** 000166	75 ce 			jne	$F420
+					$FB422:
+;|***         {
+;|***           if (MoveBytes((FARPOINTER)addr,
+;|***               (FARPOINTER)&outchar,1))
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***           if (QueueWrite(&tx_queue,outchar))
+;|***               return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|***           }
+;|***         WriteID = (ULONG) rp;
+; Line 175
+	*** 000168	8b 46 06 		mov	ax,WORD PTR [bp+6]
+	*** 00016b	89 3e 2c 00 		mov	WORD PTR _WriteID,di
+	*** 00016f	a3 2e 00 		mov	WORD PTR _WriteID+2,ax
+;|***         enable_write();
+; Line 176
+	*** 000172	e8 00 00 		call	_enable_write
+;|*** 
+;|***         if (Block(WriteID, -1L, 0, &err))
+; Line 178
+	*** 000175	ff 36 2e 00 		push	WORD PTR _WriteID+2
+	*** 000179	ff 36 2c 00 		push	WORD PTR _WriteID
+	*** 00017d	6a ff 			push	-1
+	*** 00017f	6a ff 			push	-1
+	*** 000181	6a 00 			push	0
+	*** 000183	1e 			push	ds
+	*** 000184	68 2a 00 		push	OFFSET DGROUP:_err
+	*** 000187	e8 00 00 		call	BLOCK
+	*** 00018a	0b c0 			or	ax,ax
+	*** 00018c	74 0a 			je	$I425
+;|***             if (err == 2)   /* interrupted      */
+; Line 179
+	*** 00018e	83 3e 2a 00 02 		cmp	WORD PTR _err,2
+	*** 000193	75 03 			jne	$JCC403
+	*** 000195	e9 08 ff 		jmp	$L20011
+					$JCC403:
+					$I425:
+	*** 000198	c7 06 00 00 88 13 	mov	WORD PTR _tickcount,5000
+	*** 00019e	c7 06 02 00 00 00 	mov	WORD PTR _tickcount+2,0
+;|***                 return(RPDONE|RPERR|ERROR_CHAR_CALL_INTERRUPTED);
+;|*** 
+;|***         tickcount=MIN_TIMEOUT; /* reset timeout */
+;|***         QueueInit(&tx_queue);
+; Line 183
+	*** 0001a4	68 00 00 		push	OFFSET DGROUP:_tx_queue
+	*** 0001a7	e8 00 00 		call	QUEUEINIT
+;|***         return (rp->RPstatus);
+; Line 184
+	*** 0001aa	8e 46 06 		mov	es,WORD PTR [bp+6]
+					$L20014:
+	*** 0001ad	26 8b 45 03 		mov	ax,WORD PTR es:[di+3]
+	*** 0001b1	5e 			pop	si
+	*** 0001b2	5f 			pop	di
+	*** 0001b3	c9 			leave	
+	*** 0001b4	c3 			ret	
+	*** 0001b5	90 			nop	
+;|*** 
+;|***     case RPINPUT_FLUSH:      /* 0x07            */
+;|*** 
+;|***         QueueFlush(&rx_queue);
+;|***         return (RPDONE);
+;|*** 
+;|***     case RPOUTPUT_FLUSH:     /* 0x0b            */
+; Line 191
+					$SC428:
+;|*** 
+;|***         QueueFlush(&tx_queue);
+; Line 193
+	*** 0001b6	68 00 00 		push	OFFSET DGROUP:_tx_queue
+	*** 0001b9	e9 55 ff 		jmp	$L20013
+;|***     case RPOPEN:       /* 0x0d                  */
+; Line 74
+					$SC399:
+;|*** 
+;|***         /* get current processes id */
+;|*** 
+;|***         if (GetDOSVar(2,&ptr))
+; Line 78
+	*** 0001bc	6a 02 			push	2
+	*** 0001be	8d 46 f8 		lea	ax,WORD PTR [bp-8]	;ptr
+	*** 0001c1	16 			push	ss
+	*** 0001c2	50 			push	ax
+	*** 0001c3	e8 00 00 		call	GETDOSVAR
+	*** 0001c6	0b c0 			or	ax,ax
+	*** 0001c8	74 03 			je	$JCC456
+	*** 0001ca	e9 85 02 		jmp	$SC467
+					$JCC456:
+;|***             return (RPDONE|RPERR|ERROR_BAD_COMMAND);
+;|*** 
+;|***         /* get process info */
+;|*** 
+;|***         liptr = *((PLINFOSEG far *) ptr);
+; Line 83
+	*** 0001cd	c4 5e f8 		les	bx,DWORD PTR [bp-8]	;ptr
+	*** 0001d0	26 8b 07 		mov	ax,WORD PTR es:[bx]
+	*** 0001d3	26 8b 57 02 		mov	dx,WORD PTR es:[bx+2]
+	*** 0001d7	8b f0 			mov	si,ax
+	*** 0001d9	89 56 fe 		mov	WORD PTR [bp-2],dx
+;|*** 
+;|***         /* if this device never opened */
+;|*** 
+;|***         if (opencount == 0) /* 1st time dev op'd*/
+; Line 87
+	*** 0001dc	80 3e 00 00 00 		cmp	BYTE PTR _opencount,0
+	*** 0001e1	75 2b 			jne	$I401
+;|***         {
+;|***             ThisReadRP=0L;
+; Line 89
+	*** 0001e3	2b c0 			sub	ax,ax
+	*** 0001e5	a3 36 00 		mov	WORD PTR _ThisReadRP+2,ax
+	*** 0001e8	a3 34 00 		mov	WORD PTR _ThisReadRP,ax
+;|***             ThisWriteRP=0L;
+; Line 90
+	*** 0001eb	a3 3a 00 		mov	WORD PTR _ThisWriteRP+2,ax
+	*** 0001ee	a3 38 00 		mov	WORD PTR _ThisWriteRP,ax
+;|***             opencount=1;  /* set open counter   */
+; Line 91
+	*** 0001f1	c6 06 00 00 01 		mov	BYTE PTR _opencount,1
+;|***             savepid = liptr->pidCurrent; /* PID */
+; Line 92
+	*** 0001f6	8e c2 			mov	es,dx
+	*** 0001f8	26 8b 04 		mov	ax,WORD PTR es:[si]
+	*** 0001fb	a3 00 00 		mov	WORD PTR _savepid,ax
+;|***             QueueInit(&rx_queue);/* init driver */
+; Line 93
+	*** 0001fe	68 00 00 		push	OFFSET DGROUP:_rx_queue
+	*** 000201	e8 00 00 		call	QUEUEINIT
+;|***             QueueInit(&tx_queue);
+; Line 94
+	*** 000204	68 00 00 		push	OFFSET DGROUP:_tx_queue
+	*** 000207	e8 00 00 		call	QUEUEINIT
+;|***         }
+;|***         else
+; Line 96
+	*** 00020a	e9 39 fe 		jmp	$SD468
+	*** 00020d	90 			nop	
+					$I401:
+;|***             {
+;|***             if (savepid != liptr->pidCurrent)
+; Line 98
+	*** 00020e	a1 00 00 		mov	ax,WORD PTR _savepid
+	*** 000211	8e c2 			mov	es,dx
+	*** 000213	26 39 04 		cmp	WORD PTR es:[si],ax
+	*** 000216	74 08 			je	$I403
+;|***                 return (RPDONE | RPERR | RPBUSY );
+; Line 99
+	*** 000218	b8 00 83 		mov	ax,-32000
+	*** 00021b	5e 			pop	si
+	*** 00021c	5f 			pop	di
+	*** 00021d	c9 			leave	
+	*** 00021e	c3 			ret	
+	*** 00021f	90 			nop	
+;|***             ++opencount;       /* bump counter  */
+; Line 100
+					$I403:
+	*** 000220	fe 06 00 00 		inc	BYTE PTR _opencount
+;|***         }
+; Line 101
+	*** 000224	e9 1f fe 		jmp	$SD468
+	*** 000227	90 			nop	
+;|***         return (RPDONE);
+;|*** 
+;|***     case RPCLOSE:        /* 0x0e                */
+; Line 104
+					$SC404:
+;|*** 
+;|***         /* get process info of caller */
+;|*** 
+;|***         if (GetDOSVar(2,&ptr))
+; Line 108
+	*** 000228	6a 02 			push	2
+	*** 00022a	8d 46 f8 		lea	ax,WORD PTR [bp-8]	;ptr
+	*** 00022d	16 			push	ss
+	*** 00022e	50 			push	ax
+	*** 00022f	e8 00 00 		call	GETDOSVAR
+	*** 000232	0b c0 			or	ax,ax
+	*** 000234	74 03 			je	$JCC564
+	*** 000236	e9 19 02 		jmp	$SC467
+					$JCC564:
+;|***             return (RPDONE|RPERR|ERROR_BAD_COMMAND); /* no info  */
+;|*** 
+;|***         /* get process info from os/2 */
+;|*** 
+;|***         liptr= *((PLINFOSEG far *) ptr); /* PID */
+;|***         if (savepid != liptr->pidCurrent ||
+;|***            opencount == 0)
+; Line 115
+	*** 000239	a1 00 00 		mov	ax,WORD PTR _savepid
+	*** 00023c	c4 5e f8 		les	bx,DWORD PTR [bp-8]	;ptr
+	*** 00023f	26 c4 1f 		les	bx,DWORD PTR es:[bx]
+	*** 000242	26 39 07 		cmp	WORD PTR es:[bx],ax
+	*** 000245	74 03 			je	$JCC581
+	*** 000247	e9 08 02 		jmp	$SC467
+					$JCC581:
+	*** 00024a	80 3e 00 00 00 		cmp	BYTE PTR _opencount,0
+	*** 00024f	75 03 			jne	$JCC591
+	*** 000251	e9 fe 01 		jmp	$SC467
+					$JCC591:
+;|***         return (RPDONE|RPERR|ERROR_BAD_COMMAND);
+;|***         --opencount;   /* close counts down open*/
+; Line 117
+	*** 000254	fe 0e 00 00 		dec	BYTE PTR _opencount
+;|*** 
+;|***         if (ThisReadRP !=0 && opencount == 0) {
+; Line 119
+	*** 000258	a1 36 00 		mov	ax,WORD PTR _ThisReadRP+2
+	*** 00025b	0b 06 34 00 		or	ax,WORD PTR _ThisReadRP
+	*** 00025f	75 03 			jne	$JCC607
+	*** 000261	e9 e2 fd 		jmp	$SD468
+					$JCC607:
+	*** 000264	80 3e 00 00 00 		cmp	BYTE PTR _opencount,0
+	*** 000269	74 03 			je	$JCC617
+	*** 00026b	e9 d8 fd 		jmp	$SD468
+					$JCC617:
+;|***             Run((ULONG) ThisReadRP); /* dangling*/
+; Line 120
+	*** 00026e	ff 36 36 00 		push	WORD PTR _ThisReadRP+2
+	*** 000272	ff 36 34 00 		push	WORD PTR _ThisReadRP
+	*** 000276	e8 00 00 		call	RUN
+;|***             ThisReadRP=0L;
+; Line 121
+	*** 000279	2b c0 			sub	ax,ax
+	*** 00027b	a3 36 00 		mov	WORD PTR _ThisReadRP+2,ax
+	*** 00027e	a3 34 00 		mov	WORD PTR _ThisReadRP,ax
+;|***         }
+;|***         return (RPDONE);     /* return 'done'   */
+; Line 123
+	*** 000281	e9 c2 fd 		jmp	$SD468
+					$SC429:
+;|*** 
+;|***     case RPREAD:             /* 0x04            */
+;|*** 
+;|***         /*  Try to read a character */
+;|*** 
+;|***         ThisReadRP = rp;
+;|***         if (opencount == 0)/* drvr was closed   */
+;|***         {
+;|***             rp->s.ReadWrite.count = 0;  /* EOF  */
+;|***             return(RPDONE);
+;|***         }
+;|***         com_error_word=0;/* start off no errors */
+;|***         ReadID = (ULONG) rp;
+;|***         if (Block(ReadID, -1L, 0, &err))
+;|***             if (err == 2)       /* interrupted  */
+;|***                return(RPDONE|RPERR|ERROR_CHAR_CALL_INTERRUPTED);
+;|*** 
+;|***         if (rx_queue.qcount == 0) {
+;|***            rp->s.ReadWrite.count=0;
+;|***            return (RPDONE|RPERR|ERROR_NOT_READY);
+;|***            }
+;|*** 
+;|***         i=0;
+;|***         do {
+;|***           if (MoveBytes((FARPOINTER)&inchar,
+;|***           (FARPOINTER) (rp->s.ReadWrite.buffer+i),
+;|***           1))
+;|***             return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|***             }
+;|***         while (++i < rp->s.ReadWrite.count
+;|***             && !QueueRead(&rx_queue,&inchar));
+;|***         rp->s.ReadWrite.count = i;
+;|***         QueueInit(&rx_queue);
+;|***         return(rp->RPstatus);
+;|*** 
+;|***     case RPWRITE:        /* 0x08                */
+;|*** 
+;|***         ThisWriteRP = rp;
+;|*** 
+;|***         /* transfer characters from user buffer */
+;|*** 
+;|***         addr=rp->s.ReadWrite.buffer;/* get addr */
+;|***         for (i = rp->s.ReadWrite.count; i; --i,++addr)
+;|***         {
+;|***           if (MoveBytes((FARPOINTER)addr,
+;|***               (FARPOINTER)&outchar,1))
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***           if (QueueWrite(&tx_queue,outchar))
+;|***               return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|***           }
+;|***         WriteID = (ULONG) rp;
+;|***         enable_write();
+;|*** 
+;|***         if (Block(WriteID, -1L, 0, &err))
+;|***             if (err == 2)   /* interrupted      */
+;|***                 return(RPDONE|RPERR|ERROR_CHAR_CALL_INTERRUPTED);
+;|*** 
+;|***         tickcount=MIN_TIMEOUT; /* reset timeout */
+;|***         QueueInit(&tx_queue);
+;|***         return (rp->RPstatus);
+;|*** 
+;|***     case RPINPUT_FLUSH:      /* 0x07            */
+;|*** 
+;|***         QueueFlush(&rx_queue);
+;|***         return (RPDONE);
+;|*** 
+;|***     case RPOUTPUT_FLUSH:     /* 0x0b            */
+;|*** 
+;|***         QueueFlush(&tx_queue);
+;|***         return (RPDONE);
+;|*** 
+;|***     case RPIOCTL:            /* 0x10            */
+;|*** 
+;|***         if (!((rp->s.IOCtl.category == SAMPLE_CAT)
+;|***            || (rp->s.IOCtl.category == 0x01)))
+; Line 199
+	*** 000284	26 80 7d 0d 90 		cmp	BYTE PTR es:[di+13],144
+	*** 000289	74 0a 			je	$I430
+	*** 00028b	26 80 7d 0d 01 		cmp	BYTE PTR es:[di+13],1
+	*** 000290	74 03 			je	$JCC656
+	*** 000292	e9 b1 fd 		jmp	$SD468
+					$JCC656:
+;|***               return (RPDONE);
+;|*** 
+;|***         switch (rp->s.IOCtl.function)
+; Line 202
+					$I430:
+	*** 000295	26 8a 45 0e 		mov	al,BYTE PTR es:[di+14]
+	*** 000299	2a e4 			sub	ah,ah
+;|***         {
+;|***         case 0x41:    /* set baud rate          */
+;|***         /* set baud rate to 1.2, 2.4, 9.6, 19.2 */
+;|***         /* verify caller owns the buffer area   */
+;|*** 
+;|***         if(VerifyAccess(
+;|***          SELECTOROF(rp->s.IOCtl.parameters),
+;|***          OFFSETOF(rp->s.IOCtl.parameters),
+;|***          2,             /* two bytes            */
+;|***          1) )           /* read/write           */
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          /* lock the segment down temp */
+;|*** 
+;|***          if(LockSeg(
+;|***          SELECTOROF(rp->s.IOCtl.parameters),
+;|***          0,          /* lock for < 2 sec      */
+;|***          0,          /* wait for seg lock     */
+;|***          (PLHANDLE) &lock_seg_han)) /* handle */
+;|***              return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          /* get physical address of buffer */
+;|***          if (VirtToPhys(
+;|***          (FARPOINTER) rp->s.IOCtl.parameters,
+;|***          (FARPOINTER) &appl_buffer))
+;|***              return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          /* move data to local driver buffer */
+;|*** 
+;|***          if(MoveBytes(
+;|***          (FARPOINTER) appl_buffer,  /* source             */
+;|***          (FARPOINTER)&baud_rate,    /* destination        */
+;|***          2))                        /* 2 bytes            */
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          if (UnPhysToVirt()) /* release selector*/
+;|***                 return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          /* unlock segment */
+;|*** 
+;|***          if(UnLockSeg(lock_seg_han))
+;|***               return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          switch (baud_rate)
+;|***             {
+;|***             case 1200:
+;|*** 
+;|***                 uart_regs.Bal=0xe0;
+;|***                 uart_regs.Bah=0x01;
+;|***                 break;
+;|*** 
+;|***             case 2400:
+;|*** 
+;|***                 uart_regs.Bal=0xf0;
+;|***                 uart_regs.Bah=0x00;
+;|***                 break;
+;|*** 
+;|***             case 9600:
+;|*** 
+;|***                 uart_regs.Bal=0x3c;
+;|***                 uart_regs.Bah=0x00;
+;|***                 break;
+;|*** 
+;|***             case 19200:
+;|*** 
+;|***                 uart_regs.Bal=0x1e;
+;|***                 uart_regs.Bah=0x00;
+;|***                 break;
+;|*** 
+;|***             case 38400:
+;|*** 
+;|***                 uart_regs.Bal=0x0f;
+;|***                 uart_regs.Bah=0x00;
+;|***                 break;
+;|*** 
+;|*** error:
+;|***             return (RPDONE|RPERR|ERROR_BAD_COMMAND);
+;|*** 
+;|***             }
+;|***             init();      /* reconfigure uart    */
+;|***             return (RPDONE);
+;|*** 
+;|***         case 0x68:       /* get number of chars */
+;|*** 
+;|***             /* verify caller owns the buffer    */
+;|*** 
+;|***             if(VerifyAccess(
+;|***             SELECTOROF(rp->s.IOCtl.buffer),
+;|***             OFFSETOF(rp->s.IOCtl.buffer),
+;|***             4,            /* 4 bytes            */
+;|***             1) )          /* read/write         */
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* lock the segment down temp */
+;|*** 
+;|***             if(LockSeg(
+;|***             SELECTOROF(rp->s.IOCtl.buffer),
+;|***             0,           /* lock for < 2 sec    */
+;|***             0,           /* wait for seg lock   */
+;|***             (PLHANDLE) &lock_seg_han)) /* handle*/
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* get physical address of buffer */
+;|*** 
+;|***             if (VirtToPhys(
+;|***             (FARPOINTER) rp->s.IOCtl.buffer,
+;|***             (FARPOINTER) &appl_buffer))
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             rqueue.cch=rx_queue.qcount;
+;|***             rqueue.cb=rx_queue.qsize;
+;|*** 
+;|***             /* move data to local driver buffer */
+;|*** 
+;|***             if(MoveBytes(
+;|***             (FARPOINTER)&rx_queue,  /* source   */
+;|***             (FARPOINTER) appl_buffer, /* dest   */
+;|***             4))          /* 4 bytes             */
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             if (UnPhysToVirt())
+;|***                 return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* unlock segment */
+;|*** 
+;|***             if(UnLockSeg(lock_seg_han))
+;|***                 return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             return (RPDONE);
+;|*** 
+;|***         case 0x6d:    /* get COM error info     */
+;|*** 
+;|***             /* verify caller owns the buffer    */
+;|*** 
+;|***             if(VerifyAccess(
+;|***             SELECTOROF(rp->s.IOCtl.buffer),
+;|***             OFFSETOF(rp->s.IOCtl.buffer),
+;|***             2,        /* two bytes              */
+;|***             1) )      /* read/write             */
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* lock the segment down temp */
+;|*** 
+;|***             if(LockSeg(
+;|***             SELECTOROF(rp->s.IOCtl.buffer),
+;|***             0,        /* lock for < 2 sec       */
+;|***             0,        /* wait for seg lock      */
+;|***             (PLHANDLE) &lock_seg_han)) /* handle*/
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* get physical address of buffer */
+;|*** 
+;|***             if (VirtToPhys(
+;|***             (FARPOINTER) rp->s.IOCtl.buffer,
+;|***             (FARPOINTER) &appl_buffer))
+;|***                return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* move data to application buffer */
+;|*** 
+;|***             if(MoveBytes(
+;|***             (FARPOINTER)&com_error_word, /* source */
+;|***             (FARPOINTER) appl_buffer, /* dest  */
+;|***             2))       /* 2 bytes               */
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             if (UnPhysToVirt())
+;|***                 return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* unlock segment */
+;|*** 
+;|***             if(UnLockSeg(lock_seg_han))
+;|***                 return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             return (RPDONE);
+;|*** 
+;|***         default:
+;|***             return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|***         }
+; Line 380
+	*** 00029b	3d 6d 00 		cmp	ax,109
+	*** 00029e	75 03 			jne	$JCC670
+	*** 0002a0	e9 31 01 		jmp	$SC459
+					$JCC670:
+	*** 0002a3	77 0b 			ja	$L20002
+	*** 0002a5	2c 41 			sub	al,65
+	*** 0002a7	74 0f 			je	$SC435
+	*** 0002a9	2c 27 			sub	al,39
+	*** 0002ab	75 03 			jne	$JCC683
+	*** 0002ad	e9 c2 00 		jmp	$SC452
+					$JCC683:
+;|***         default:
+; Line 378
+					$L20002:
+;|***             return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+; Line 151
+	*** 0002b0	b8 0c 81 		mov	ax,-32500
+	*** 0002b3	5e 			pop	si
+	*** 0002b4	5f 			pop	di
+	*** 0002b5	c9 			leave	
+	*** 0002b6	c3 			ret	
+	*** 0002b7	90 			nop	
+;|***             }
+;|***         while (++i < rp->s.ReadWrite.count
+;|***             && !QueueRead(&rx_queue,&inchar));
+;|***         rp->s.ReadWrite.count = i;
+;|***         QueueInit(&rx_queue);
+;|***         return(rp->RPstatus);
+;|*** 
+;|***     case RPWRITE:        /* 0x08                */
+;|*** 
+;|***         ThisWriteRP = rp;
+;|*** 
+;|***         /* transfer characters from user buffer */
+;|*** 
+;|***         addr=rp->s.ReadWrite.buffer;/* get addr */
+;|***         for (i = rp->s.ReadWrite.count; i; --i,++addr)
+;|***         {
+;|***           if (MoveBytes((FARPOINTER)addr,
+;|***               (FARPOINTER)&outchar,1))
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***           if (QueueWrite(&tx_queue,outchar))
+;|***               return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|***           }
+;|***         WriteID = (ULONG) rp;
+;|***         enable_write();
+;|*** 
+;|***         if (Block(WriteID, -1L, 0, &err))
+;|***             if (err == 2)   /* interrupted      */
+;|***                 return(RPDONE|RPERR|ERROR_CHAR_CALL_INTERRUPTED);
+;|*** 
+;|***         tickcount=MIN_TIMEOUT; /* reset timeout */
+;|***         QueueInit(&tx_queue);
+;|***         return (rp->RPstatus);
+;|*** 
+;|***     case RPINPUT_FLUSH:      /* 0x07            */
+;|*** 
+;|***         QueueFlush(&rx_queue);
+;|***         return (RPDONE);
+;|*** 
+;|***     case RPOUTPUT_FLUSH:     /* 0x0b            */
+;|*** 
+;|***         QueueFlush(&tx_queue);
+;|***         return (RPDONE);
+;|*** 
+;|***     case RPIOCTL:            /* 0x10            */
+;|*** 
+;|***         if (!((rp->s.IOCtl.category == SAMPLE_CAT)
+;|***            || (rp->s.IOCtl.category == 0x01)))
+;|***               return (RPDONE);
+;|*** 
+;|***         switch (rp->s.IOCtl.function)
+;|***         {
+;|***         case 0x41:    /* set baud rate          */
+; Line 204
+					$SC435:
+;|***         /* set baud rate to 1.2, 2.4, 9.6, 19.2 */
+;|***         /* verify caller owns the buffer area   */
+;|*** 
+;|***         if(VerifyAccess(
+;|***          SELECTOROF(rp->s.IOCtl.parameters),
+;|***          OFFSETOF(rp->s.IOCtl.parameters),
+;|***          2,             /* two bytes            */
+;|***          1) )           /* read/write           */
+; Line 212
+	*** 0002b8	26 ff 75 11 		push	WORD PTR es:[di+17]
+	*** 0002bc	26 ff 75 0f 		push	WORD PTR es:[di+15]
+	*** 0002c0	6a 02 			push	2
+	*** 0002c2	6a 01 			push	1
+	*** 0002c4	e8 00 00 		call	VERIFYACCESS
+	*** 0002c7	0b c0 			or	ax,ax
+	*** 0002c9	75 e5 			jne	$L20002
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          /* lock the segment down temp */
+;|*** 
+;|***          if(LockSeg(
+;|***          SELECTOROF(rp->s.IOCtl.parameters),
+;|***          0,          /* lock for < 2 sec      */
+;|***          0,          /* wait for seg lock     */
+;|***          (PLHANDLE) &lock_seg_han)) /* handle */
+; Line 221
+	*** 0002cb	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 0002ce	26 ff 75 11 		push	WORD PTR es:[di+17]
+	*** 0002d2	50 			push	ax
+	*** 0002d3	50 			push	ax
+	*** 0002d4	1e 			push	ds
+	*** 0002d5	68 00 00 		push	OFFSET DGROUP:_lock_seg_han
+	*** 0002d8	e8 00 00 		call	LOCKSEG
+	*** 0002db	0b c0 			or	ax,ax
+	*** 0002dd	75 d1 			jne	$L20002
+;|***              return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          /* get physical address of buffer */
+;|***          if (VirtToPhys(
+;|***          (FARPOINTER) rp->s.IOCtl.parameters,
+;|***          (FARPOINTER) &appl_buffer))
+; Line 227
+	*** 0002df	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 0002e2	26 ff 75 11 		push	WORD PTR es:[di+17]
+	*** 0002e6	26 ff 75 0f 		push	WORD PTR es:[di+15]
+	*** 0002ea	1e 			push	ds
+	*** 0002eb	68 22 00 		push	OFFSET DGROUP:_appl_buffer
+	*** 0002ee	e8 00 00 		call	VIRTTOPHYS
+	*** 0002f1	0b c0 			or	ax,ax
+	*** 0002f3	75 bb 			jne	$L20002
+;|***              return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          /* move data to local driver buffer */
+;|*** 
+;|***          if(MoveBytes(
+;|***          (FARPOINTER) appl_buffer,  /* source             */
+;|***          (FARPOINTER)&baud_rate,    /* destination        */
+;|***          2))                        /* 2 bytes            */
+; Line 235
+	*** 0002f5	ff 36 24 00 		push	WORD PTR _appl_buffer+2
+	*** 0002f9	ff 36 22 00 		push	WORD PTR _appl_buffer
+	*** 0002fd	1e 			push	ds
+	*** 0002fe	68 00 00 		push	OFFSET DGROUP:_baud_rate
+	*** 000301	6a 02 			push	2
+	*** 000303	e8 00 00 		call	MOVEBYTES
+	*** 000306	0b c0 			or	ax,ax
+	*** 000308	75 a6 			jne	$L20002
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          if (UnPhysToVirt()) /* release selector*/
+; Line 238
+	*** 00030a	e8 00 00 		call	UNPHYSTOVIRT
+	*** 00030d	0b c0 			or	ax,ax
+	*** 00030f	75 9f 			jne	$L20002
+;|***                 return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          /* unlock segment */
+;|*** 
+;|***          if(UnLockSeg(lock_seg_han))
+; Line 243
+	*** 000311	ff 36 02 00 		push	WORD PTR _lock_seg_han+2
+	*** 000315	ff 36 00 00 		push	WORD PTR _lock_seg_han
+	*** 000319	e8 00 00 		call	UNLOCKSEG
+	*** 00031c	0b c0 			or	ax,ax
+	*** 00031e	75 90 			jne	$L20002
+;|***               return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***          switch (baud_rate)
+; Line 246
+	*** 000320	a1 00 00 		mov	ax,WORD PTR _baud_rate
+;|***             {
+;|***             case 1200:
+;|*** 
+;|***                 uart_regs.Bal=0xe0;
+;|***                 uart_regs.Bah=0x01;
+;|***                 break;
+;|*** 
+;|***             case 2400:
+;|*** 
+;|***                 uart_regs.Bal=0xf0;
+;|***                 uart_regs.Bah=0x00;
+;|***                 break;
+;|*** 
+;|***             case 9600:
+;|*** 
+;|***                 uart_regs.Bal=0x3c;
+;|***                 uart_regs.Bah=0x00;
+;|***                 break;
+;|*** 
+;|***             case 19200:
+;|*** 
+;|***                 uart_regs.Bal=0x1e;
+;|***                 uart_regs.Bah=0x00;
+;|***                 break;
+;|*** 
+;|***             case 38400:
+;|*** 
+;|***                 uart_regs.Bal=0x0f;
+;|***                 uart_regs.Bah=0x00;
+;|***                 break;
+;|*** 
+;|*** error:
+;|***             return (RPDONE|RPERR|ERROR_BAD_COMMAND);
+;|*** 
+;|***             }
+; Line 281
+	*** 000323	2d b0 04 		sub	ax,1200
+	*** 000326	74 16 			je	$SC446
+	*** 000328	2d b0 04 		sub	ax,1200
+	*** 00032b	74 1d 			je	$SC447
+	*** 00032d	2d 20 1c 		sub	ax,7200
+	*** 000330	74 20 			je	$SC448
+	*** 000332	2d 80 25 		sub	ax,9600
+	*** 000335	74 23 			je	$SC449
+	*** 000337	2d 00 4b 		sub	ax,19200
+	*** 00033a	74 26 			je	$SC450
+	*** 00033c	eb 2e 			jmp	SHORT $SB443
+;|***             case 1200:
+; Line 248
+					$SC446:
+;|*** 
+;|***                 uart_regs.Bal=0xe0;
+; Line 250
+	*** 00033e	c6 06 02 00 e0 		mov	BYTE PTR _uart_regs+2,224
+;|***                 uart_regs.Bah=0x01;
+; Line 251
+	*** 000343	c6 06 03 00 01 		mov	BYTE PTR _uart_regs+3,1
+;|***                 break;
+; Line 252
+	*** 000348	eb 22 			jmp	SHORT $SB443
+;|*** 
+;|***             case 2400:
+; Line 254
+					$SC447:
+;|*** 
+;|***                 uart_regs.Bal=0xf0;
+; Line 256
+	*** 00034a	c6 06 02 00 f0 		mov	BYTE PTR _uart_regs+2,240
+	*** 00034f	eb 16 			jmp	SHORT $L20016
+	*** 000351	90 			nop	
+;|***                 uart_regs.Bah=0x00;
+;|***                 break;
+;|*** 
+;|***             case 9600:
+; Line 260
+					$SC448:
+;|*** 
+;|***                 uart_regs.Bal=0x3c;
+; Line 262
+	*** 000352	c6 06 02 00 3c 		mov	BYTE PTR _uart_regs+2,60
+	*** 000357	eb 0e 			jmp	SHORT $L20016
+	*** 000359	90 			nop	
+;|***                 uart_regs.Bah=0x00;
+;|***                 break;
+;|*** 
+;|***             case 19200:
+; Line 266
+					$SC449:
+;|*** 
+;|***                 uart_regs.Bal=0x1e;
+; Line 268
+	*** 00035a	c6 06 02 00 1e 		mov	BYTE PTR _uart_regs+2,30
+	*** 00035f	eb 06 			jmp	SHORT $L20016
+	*** 000361	90 			nop	
+;|***                 uart_regs.Bah=0x00;
+;|***                 break;
+;|*** 
+;|***             case 38400:
+; Line 272
+					$SC450:
+;|*** 
+;|***                 uart_regs.Bal=0x0f;
+; Line 274
+	*** 000362	c6 06 02 00 0f 		mov	BYTE PTR _uart_regs+2,15
+;|***                 uart_regs.Bah=0x00;
+; Line 275
+					$L20016:
+	*** 000367	c6 06 03 00 00 		mov	BYTE PTR _uart_regs+3,0
+;|***                 break;
+;|*** 
+;|*** error:
+;|***             return (RPDONE|RPERR|ERROR_BAD_COMMAND);
+;|*** 
+;|***             }
+; Line 281
+					$SB443:
+;|***             init();      /* reconfigure uart    */
+; Line 282
+	*** 00036c	e8 00 00 		call	_init
+	*** 00036f	e9 d4 fc 		jmp	$SD468
+;|***             return (RPDONE);
+;|*** 
+;|***         case 0x68:       /* get number of chars */
+; Line 285
+					$SC452:
+;|*** 
+;|***             /* verify caller owns the buffer    */
+;|*** 
+;|***             if(VerifyAccess(
+;|***             SELECTOROF(rp->s.IOCtl.buffer),
+;|***             OFFSETOF(rp->s.IOCtl.buffer),
+;|***             4,            /* 4 bytes            */
+;|***             1) )          /* read/write         */
+; Line 293
+	*** 000372	26 ff 75 15 		push	WORD PTR es:[di+21]
+	*** 000376	26 ff 75 13 		push	WORD PTR es:[di+19]
+	*** 00037a	6a 04 			push	4
+	*** 00037c	6a 01 			push	1
+	*** 00037e	e8 00 00 		call	VERIFYACCESS
+	*** 000381	0b c0 			or	ax,ax
+	*** 000383	74 03 			je	$JCC899
+	*** 000385	e9 28 ff 		jmp	$L20002
+					$JCC899:
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* lock the segment down temp */
+;|*** 
+;|***             if(LockSeg(
+;|***             SELECTOROF(rp->s.IOCtl.buffer),
+;|***             0,           /* lock for < 2 sec    */
+;|***             0,           /* wait for seg lock   */
+;|***             (PLHANDLE) &lock_seg_han)) /* handle*/
+; Line 302
+	*** 000388	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 00038b	26 ff 75 15 		push	WORD PTR es:[di+21]
+	*** 00038f	50 			push	ax
+	*** 000390	50 			push	ax
+	*** 000391	1e 			push	ds
+	*** 000392	68 00 00 		push	OFFSET DGROUP:_lock_seg_han
+	*** 000395	e8 00 00 		call	LOCKSEG
+	*** 000398	0b c0 			or	ax,ax
+	*** 00039a	74 03 			je	$JCC922
+	*** 00039c	e9 11 ff 		jmp	$L20002
+					$JCC922:
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* get physical address of buffer */
+;|*** 
+;|***             if (VirtToPhys(
+;|***             (FARPOINTER) rp->s.IOCtl.buffer,
+;|***             (FARPOINTER) &appl_buffer))
+; Line 309
+	*** 00039f	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 0003a2	26 ff 75 15 		push	WORD PTR es:[di+21]
+	*** 0003a6	26 ff 75 13 		push	WORD PTR es:[di+19]
+	*** 0003aa	1e 			push	ds
+	*** 0003ab	68 22 00 		push	OFFSET DGROUP:_appl_buffer
+	*** 0003ae	e8 00 00 		call	VIRTTOPHYS
+	*** 0003b1	0b c0 			or	ax,ax
+	*** 0003b3	74 03 			je	$JCC947
+	*** 0003b5	e9 f8 fe 		jmp	$L20002
+					$JCC947:
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             rqueue.cch=rx_queue.qcount;
+; Line 312
+	*** 0003b8	a1 04 00 		mov	ax,WORD PTR _rx_queue+4
+	*** 0003bb	a3 00 00 		mov	WORD PTR _rqueue,ax
+;|***             rqueue.cb=rx_queue.qsize;
+; Line 313
+	*** 0003be	a1 00 00 		mov	ax,WORD PTR _rx_queue
+	*** 0003c1	a3 02 00 		mov	WORD PTR _rqueue+2,ax
+;|*** 
+;|***             /* move data to local driver buffer */
+;|*** 
+;|***             if(MoveBytes(
+;|***             (FARPOINTER)&rx_queue,  /* source   */
+;|***             (FARPOINTER) appl_buffer, /* dest   */
+;|***             4))          /* 4 bytes             */
+; Line 320
+	*** 0003c4	1e 			push	ds
+	*** 0003c5	68 00 00 		push	OFFSET DGROUP:_rx_queue
+	*** 0003c8	ff 36 24 00 		push	WORD PTR _appl_buffer+2
+	*** 0003cc	ff 36 22 00 		push	WORD PTR _appl_buffer
+	*** 0003d0	6a 04 			push	4
+	*** 0003d2	eb 54 			jmp	SHORT $L20017
+					$SC459:
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             if (UnPhysToVirt())
+;|***                 return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* unlock segment */
+;|*** 
+;|***             if(UnLockSeg(lock_seg_han))
+;|***                 return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             return (RPDONE);
+;|*** 
+;|***         case 0x6d:    /* get COM error info     */
+;|*** 
+;|***             /* verify caller owns the buffer    */
+;|*** 
+;|***             if(VerifyAccess(
+;|***             SELECTOROF(rp->s.IOCtl.buffer),
+;|***             OFFSETOF(rp->s.IOCtl.buffer),
+;|***             2,        /* two bytes              */
+;|***             1) )      /* read/write             */
+; Line 341
+	*** 0003d4	26 ff 75 15 		push	WORD PTR es:[di+21]
+	*** 0003d8	26 ff 75 13 		push	WORD PTR es:[di+19]
+	*** 0003dc	6a 02 			push	2
+	*** 0003de	6a 01 			push	1
+	*** 0003e0	e8 00 00 		call	VERIFYACCESS
+	*** 0003e3	0b c0 			or	ax,ax
+	*** 0003e5	74 03 			je	$JCC997
+	*** 0003e7	e9 c6 fe 		jmp	$L20002
+					$JCC997:
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* lock the segment down temp */
+;|*** 
+;|***             if(LockSeg(
+;|***             SELECTOROF(rp->s.IOCtl.buffer),
+;|***             0,        /* lock for < 2 sec       */
+;|***             0,        /* wait for seg lock      */
+;|***             (PLHANDLE) &lock_seg_han)) /* handle*/
+; Line 350
+	*** 0003ea	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 0003ed	26 ff 75 15 		push	WORD PTR es:[di+21]
+	*** 0003f1	50 			push	ax
+	*** 0003f2	50 			push	ax
+	*** 0003f3	1e 			push	ds
+	*** 0003f4	68 00 00 		push	OFFSET DGROUP:_lock_seg_han
+	*** 0003f7	e8 00 00 		call	LOCKSEG
+	*** 0003fa	0b c0 			or	ax,ax
+	*** 0003fc	74 03 			je	$JCC1020
+	*** 0003fe	e9 af fe 		jmp	$L20002
+					$JCC1020:
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* get physical address of buffer */
+;|*** 
+;|***             if (VirtToPhys(
+;|***             (FARPOINTER) rp->s.IOCtl.buffer,
+;|***             (FARPOINTER) &appl_buffer))
+; Line 357
+	*** 000401	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 000404	26 ff 75 15 		push	WORD PTR es:[di+21]
+	*** 000408	26 ff 75 13 		push	WORD PTR es:[di+19]
+	*** 00040c	1e 			push	ds
+	*** 00040d	68 22 00 		push	OFFSET DGROUP:_appl_buffer
+	*** 000410	e8 00 00 		call	VIRTTOPHYS
+	*** 000413	0b c0 			or	ax,ax
+	*** 000415	74 03 			je	$JCC1045
+	*** 000417	e9 96 fe 		jmp	$L20002
+					$JCC1045:
+;|***                return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* move data to application buffer */
+;|*** 
+;|***             if(MoveBytes(
+;|***             (FARPOINTER)&com_error_word, /* source */
+;|***             (FARPOINTER) appl_buffer, /* dest  */
+;|***             2))       /* 2 bytes               */
+; Line 365
+	*** 00041a	1e 			push	ds
+	*** 00041b	68 00 00 		push	OFFSET DGROUP:_com_error_word
+	*** 00041e	ff 36 24 00 		push	WORD PTR _appl_buffer+2
+	*** 000422	ff 36 22 00 		push	WORD PTR _appl_buffer
+	*** 000426	6a 02 			push	2
+					$L20017:
+	*** 000428	e8 00 00 		call	MOVEBYTES
+	*** 00042b	0b c0 			or	ax,ax
+	*** 00042d	74 03 			je	$JCC1069
+	*** 00042f	e9 7e fe 		jmp	$L20002
+					$JCC1069:
+;|***                 return (RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             if (UnPhysToVirt())
+; Line 368
+	*** 000432	e8 00 00 		call	UNPHYSTOVIRT
+	*** 000435	0b c0 			or	ax,ax
+	*** 000437	74 03 			je	$JCC1079
+	*** 000439	e9 74 fe 		jmp	$L20002
+					$JCC1079:
+;|***                 return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* unlock segment */
+;|*** 
+;|***             if(UnLockSeg(lock_seg_han))
+; Line 373
+	*** 00043c	ff 36 02 00 		push	WORD PTR _lock_seg_han+2
+	*** 000440	ff 36 00 00 		push	WORD PTR _lock_seg_han
+	*** 000444	e8 00 00 		call	UNLOCKSEG
+	*** 000447	0b c0 			or	ax,ax
+	*** 000449	75 03 			jne	$JCC1097
+	*** 00044b	e9 f8 fb 		jmp	$SD468
+					$JCC1097:
+	*** 00044e	e9 5f fe 		jmp	$L20002
+	*** 000451	90 			nop	
+					$SC467:
+;|***                 return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|*** 
+;|***             return (RPDONE);
+;|*** 
+;|***         default:
+;|***             return(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|***         }
+;|*** 
+;|***         /* don't allow deinstall */
+;|*** 
+;|***     case RPDEINSTALL:  /* 0x14                  */
+;|***         return(RPDONE|RPERR|ERROR_BAD_COMMAND);
+; Line 385
+	*** 000452	b8 03 81 		mov	ax,-32509
+;|*** 
+;|***     /* all other commands are ignored */
+;|*** 
+;|***     default:
+;|***         return(RPDONE);
+;|*** 
+;|***     }
+;|*** }
+; Line 393
+					$EX387:
+	*** 000455	5e 			pop	si
+	*** 000456	5f 			pop	di
+	*** 000457	c9 			leave	
+	*** 000458	c3 			ret	
+	*** 000459	90 			nop	
+
+_main	ENDP
+;|*** 
+;|*** void enable_write()
+;|*** 
+;|*** /* enable write interrupts on uart */
+;|*** 
+;|*** {
+; Line 399
+	PUBLIC	_enable_write
+_enable_write	PROC NEAR
+	*** 00045a	56 			push	si
+;	port = -4
+;	register si = reg_val
+;|***     int  port;
+;|***     int  reg_val;
+;|*** 
+;|***     port=UART_PORT_ADDRESS;
+;|***     reg_val=inp(port+2) & 0x60;
+; Line 404
+	*** 00045b	ba 22 02 		mov	dx,546
+	*** 00045e	ec 			in	al,dx
+	*** 00045f	25 60 00 		and	ax,96
+	*** 000462	8b f0 			mov	si,ax
+;|***     set_bank(00);
+; Line 405
+	*** 000464	6a 00 			push	0
+	*** 000466	e8 00 00 		call	_set_bank
+	*** 000469	83 c4 02 		add	sp,2
+;|***     outp((port+1),inp(port+1) | 0x12);
+; Line 406
+	*** 00046c	ba 21 02 		mov	dx,545
+	*** 00046f	ec 			in	al,dx
+	*** 000470	0c 12 			or	al,18
+	*** 000472	2a e4 			sub	ah,ah
+	*** 000474	ee 			out	dx, al
+
+;|***     outp((port+2),reg_val);
+; Line 407
+	*** 000475	8b c6 			mov	ax,si
+	*** 000477	ba 22 02 		mov	dx,546
+	*** 00047a	ee 			out	dx, al
+
+;|*** 
+;|*** }
+; Line 409
+	*** 00047b	5e 			pop	si
+	*** 00047c	c3 			ret	
+	*** 00047d	90 			nop	
+
+_enable_write	ENDP
+;|*** void disable_write()
+;|*** 
+;|*** /* turn off write interrupts on uart */
+;|*** 
+;|*** {
+; Line 414
+	PUBLIC	_disable_write
+_disable_write	PROC NEAR
+	*** 00047e	56 			push	si
+;	port = -4
+;	register si = reg_val
+;|***     int  port;
+;|***     int  reg_val;
+;|*** 
+;|***     port=UART_PORT_ADDRESS;
+;|***     reg_val=inp(port+2) & 0x60;
+; Line 419
+	*** 00047f	ba 22 02 		mov	dx,546
+	*** 000482	ec 			in	al,dx
+	*** 000483	25 60 00 		and	ax,96
+	*** 000486	8b f0 			mov	si,ax
+;|***     set_bank(00);
+; Line 420
+	*** 000488	6a 00 			push	0
+	*** 00048a	e8 00 00 		call	_set_bank
+	*** 00048d	83 c4 02 		add	sp,2
+;|***     outp((port+1),inp(port+1) & 0xed);
+; Line 421
+	*** 000490	ba 21 02 		mov	dx,545
+	*** 000493	ec 			in	al,dx
+	*** 000494	25 ed 00 		and	ax,237
+	*** 000497	ee 			out	dx, al
+
+;|***     outp((port+2),reg_val);
+; Line 422
+	*** 000498	8b c6 			mov	ax,si
+	*** 00049a	ba 22 02 		mov	dx,546
+	*** 00049d	ee 			out	dx, al
+
+;|*** 
+;|*** }
+; Line 424
+	*** 00049e	5e 			pop	si
+	*** 00049f	c3 			ret	
+
+_disable_write	ENDP
+;|*** 
+;|*** void init ()
+;|*** 
+;|*** /* intializes software and configures 82050 */
+;|*** 
+;|*** {
+; Line 430
+	PUBLIC	_init
+_init	PROC NEAR
+;|***     config_82050 ();    /* Configure 82050      */
+; Line 431
+	*** 0004a0	e8 00 00 		call	_config_82050
+;|***     set_bank(01);
+; Line 432
+	*** 0004a3	6a 01 			push	1
+	*** 0004a5	e8 00 00 		call	_set_bank
+	*** 0004a8	83 c4 02 		add	sp,2
+;|*** }
+; Line 433
+	*** 0004ab	c3 			ret	
+
+_init	ENDP
+;|*** 
+;|*** void config_82050()
+;|*** 
+;|*** /*  Configure the 82050      */
+;|*** 
+;|*** {
+; Line 439
+	PUBLIC	_config_82050
+_config_82050	PROC NEAR
+;	port = -2
+;	inval = -4
+;|***     int  port;
+;|***     int inval;
+;|*** 
+;|***     Disable();                          /* disable interrupts    */
+; Line 443
+	*** 0004ac	e8 00 00 		call	DISABLE
+;|***     port=UART_PORT_ADDRESS;
+;|*** 
+;|***     /* set stick bit */
+;|*** 
+;|***     set_bank(01);                       /* stick bit            */
+; Line 448
+	*** 0004af	6a 01 			push	1
+	*** 0004b1	e8 00 00 		call	_set_bank
+	*** 0004b4	83 c4 02 		add	sp,2
+;|***     outp((port+7),0x10);                /* reset port           */
+; Line 449
+	*** 0004b7	b8 10 00 		mov	ax,16
+	*** 0004ba	ba 27 02 		mov	dx,551
+	*** 0004bd	ee 			out	dx, al
+
+;|***     outp ((port+1), uart_regs.Txf);     /* stick bit            */
+; Line 450
+	*** 0004be	a0 0b 00 		mov	al,BYTE PTR _uart_regs+11
+	*** 0004c1	2a e4 			sub	ah,ah
+	*** 0004c3	ba 21 02 		mov	dx,545
+	*** 0004c6	ee 			out	dx, al
+
+;|*** 
+;|***     set_bank (02);                      /* general config       */
+; Line 452
+	*** 0004c7	6a 02 			push	2
+	*** 0004c9	e8 00 00 		call	_set_bank
+	*** 0004cc	83 c4 02 		add	sp,2
+;|***     outp ((port + 4), uart_regs.Imd);   /*auto rupt             */
+; Line 453
+	*** 0004cf	a0 15 00 		mov	al,BYTE PTR _uart_regs+21
+	*** 0004d2	2a e4 			sub	ah,ah
+	*** 0004d4	ba 24 02 		mov	dx,548
+	*** 0004d7	ee 			out	dx, al
+
+;|***     outp ((port + 7), uart_regs.Rmd);
+; Line 454
+	*** 0004d8	a0 18 00 		mov	al,BYTE PTR _uart_regs+24
+	*** 0004db	ba 27 02 		mov	dx,551
+	*** 0004de	ee 			out	dx, al
+
+;|***     outp ((port + 5), uart_regs.Acr1);  /* cntl-z               */
+; Line 455
+	*** 0004df	a0 16 00 		mov	al,BYTE PTR _uart_regs+22
+	*** 0004e2	ba 25 02 		mov	dx,549
+	*** 0004e5	ee 			out	dx, al
+
+;|***     outp ((port + 3), uart_regs.Tmd);   /* no 9 bit             */
+; Line 456
+	*** 0004e6	a0 14 00 		mov	al,BYTE PTR _uart_regs+20
+	*** 0004e9	ba 23 02 		mov	dx,547
+	*** 0004ec	ee 			out	dx, al
+
+;|***     outp ((port + 1), uart_regs.Fmd);   /* rx fifo              */
+; Line 457
+	*** 0004ed	a0 12 00 		mov	al,BYTE PTR _uart_regs+18
+	*** 0004f0	ba 21 02 		mov	dx,545
+	*** 0004f3	ee 			out	dx, al
+
+;|***     outp ((port + 6), uart_regs.Rie);   /* enable               */
+; Line 458
+	*** 0004f4	a0 17 00 		mov	al,BYTE PTR _uart_regs+23
+	*** 0004f7	ba 26 02 		mov	dx,550
+	*** 0004fa	ee 			out	dx, al
+
+;|*** 
+;|***     set_bank (03);                      /* modemconfiguration   */
+; Line 460
+	*** 0004fb	6a 03 			push	3
+	*** 0004fd	e8 00 00 		call	_set_bank
+	*** 000500	83 c4 02 		add	sp,2
+;|*** 
+;|***     outp ((port + 0), uart_regs.Clcf);  /* clock                */
+; Line 462
+	*** 000503	a0 19 00 		mov	al,BYTE PTR _uart_regs+25
+	*** 000506	2a e4 			sub	ah,ah
+	*** 000508	ba 20 02 		mov	dx,544
+	*** 00050b	ee 			out	dx, al
+
+;|***     set_dlab (03);                      /*                      */
+; Line 463
+	*** 00050c	6a 03 			push	3
+	*** 00050e	e8 00 00 		call	_set_dlab
+	*** 000511	83 c4 02 		add	sp,2
+;|***     outp ((port + 0), uart_regs.Bbl);   /* BRGB lsb             */
+; Line 464
+	*** 000514	a0 1b 00 		mov	al,BYTE PTR _uart_regs+27
+	*** 000517	2a e4 			sub	ah,ah
+	*** 000519	ba 20 02 		mov	dx,544
+	*** 00051c	ee 			out	dx, al
+
+;|***     outp ((port + 1), uart_regs.Bbh);   /* BRGB msb             */
+; Line 465
+	*** 00051d	a0 1c 00 		mov	al,BYTE PTR _uart_regs+28
+	*** 000520	ba 21 02 		mov	dx,545
+	*** 000523	ee 			out	dx, al
+
+;|***     reset_dlab (03);                    /*                      */
+; Line 466
+	*** 000524	6a 03 			push	3
+	*** 000526	e8 00 00 		call	_reset_dlab
+	*** 000529	83 c4 02 		add	sp,2
+;|***     outp ((port + 3), uart_regs.Bbcf);  /* BRGB                 */
+; Line 467
+	*** 00052c	a0 1e 00 		mov	al,BYTE PTR _uart_regs+30
+	*** 00052f	2a e4 			sub	ah,ah
+	*** 000531	ba 23 02 		mov	dx,547
+	*** 000534	ee 			out	dx, al
+
+;|***     outp ((port + 6), uart_regs.Tmie);  /* timer b              */
+; Line 468
+	*** 000535	a0 21 00 		mov	al,BYTE PTR _uart_regs+33
+	*** 000538	ba 26 02 		mov	dx,550
+	*** 00053b	ee 			out	dx, al
+
+;|*** 
+;|***     set_bank (00);                      /* general cfg          */
+; Line 470
+	*** 00053c	6a 00 			push	0
+	*** 00053e	e8 00 00 		call	_set_bank
+	*** 000541	83 c4 02 		add	sp,2
+;|***     outp ((port + 1), uart_regs.Ger);   /* enable               */
+; Line 471
+	*** 000544	a0 01 00 		mov	al,BYTE PTR _uart_regs+1
+	*** 000547	2a e4 			sub	ah,ah
+	*** 000549	ba 21 02 		mov	dx,545
+	*** 00054c	ee 			out	dx, al
+
+;|***     outp ((port + 3), uart_regs.Lcr);   /* 8 bit                */
+; Line 472
+	*** 00054d	a0 05 00 		mov	al,BYTE PTR _uart_regs+5
+	*** 000550	ba 23 02 		mov	dx,547
+	*** 000553	ee 			out	dx, al
+
+;|***     outp ((port + 7), uart_regs.Acr0);  /* CR                   */
+; Line 473
+	*** 000554	a0 09 00 		mov	al,BYTE PTR _uart_regs+9
+	*** 000557	ba 27 02 		mov	dx,551
+	*** 00055a	ee 			out	dx, al
+
+;|***     outp ((port + 4), uart_regs.Mcr_0); /* no DTR               */
+; Line 474
+	*** 00055b	a0 06 00 		mov	al,BYTE PTR _uart_regs+6
+	*** 00055e	ba 24 02 		mov	dx,548
+	*** 000561	ee 			out	dx, al
+
+;|***     set_dlab (00);                      /*                      */
+; Line 475
+	*** 000562	6a 00 			push	0
+	*** 000564	e8 00 00 		call	_set_dlab
+	*** 000567	83 c4 02 		add	sp,2
+;|***     outp ((port + 0), uart_regs.Bal);   /* BRGA lsb             */
+; Line 476
+	*** 00056a	a0 02 00 		mov	al,BYTE PTR _uart_regs+2
+	*** 00056d	2a e4 			sub	ah,ah
+	*** 00056f	ba 20 02 		mov	dx,544
+	*** 000572	ee 			out	dx, al
+
+;|***     outp ((port + 1), uart_regs.Bah);   /* BRGA msb             */
+; Line 477
+	*** 000573	a0 03 00 		mov	al,BYTE PTR _uart_regs+3
+	*** 000576	ba 21 02 		mov	dx,545
+	*** 000579	ee 			out	dx, al
+
+;|***     reset_dlab (00);
+; Line 478
+	*** 00057a	6a 00 			push	0
+	*** 00057c	e8 00 00 		call	_reset_dlab
+	*** 00057f	83 c4 02 		add	sp,2
+;|***     set_bank(01);
+; Line 479
+	*** 000582	6a 01 			push	1
+	*** 000584	e8 00 00 		call	_set_bank
+	*** 000587	83 c4 02 		add	sp,2
+;|*** 
+;|***     Enable();                           /* turn on              */
+; Line 481
+	*** 00058a	e8 00 00 		call	ENABLE
+;|*** }
+; Line 482
+	*** 00058d	c3 			ret	
+
+_config_82050	ENDP
+;|*** 
+;|*** void set_dlab (bank)
+;|*** 
+;|*** /*  Set DLAB bit to allow access to divisior registers  */
+;|*** 
+;|*** int bank;
+; Line 488
+	PUBLIC	_set_dlab
+_set_dlab	PROC NEAR
+	*** 00058e	55 			push	bp
+	*** 00058f	8b ec 			mov	bp,sp
+	*** 000591	56 			push	si
+;	bank = 4
+;	register si = inval
+;	port = -2
+;|*** {
+;|***     int  inval;
+;|***     int  port;
+;|*** 
+;|***     port=UART_PORT_ADDRESS;
+;|***     set_bank (00);
+; Line 494
+	*** 000592	6a 00 			push	0
+	*** 000594	e8 00 00 		call	_set_bank
+	*** 000597	83 c4 02 		add	sp,2
+;|***     inval=inp(port +3);
+; Line 495
+	*** 00059a	ba 23 02 		mov	dx,547
+	*** 00059d	ec 			in	al,dx
+	*** 00059e	2a e4 			sub	ah,ah
+	*** 0005a0	8b f0 			mov	si,ax
+;|***     inval =inval | 0x80;                 /* set dlab in LCR     */
+; Line 496
+	*** 0005a2	81 ce 80 00 		or	si,128
+;|***     outp ((port+3),inval);
+; Line 497
+	*** 0005a6	8b c6 			mov	ax,si
+	*** 0005a8	ee 			out	dx, al
+
+;|***     set_bank (bank);
+; Line 498
+	*** 0005a9	ff 76 04 		push	WORD PTR [bp+4]	;bank
+	*** 0005ac	e8 00 00 		call	_set_bank
+	*** 0005af	83 c4 02 		add	sp,2
+;|*** }
+; Line 499
+	*** 0005b2	5e 			pop	si
+	*** 0005b3	c9 			leave	
+	*** 0005b4	c3 			ret	
+	*** 0005b5	90 			nop	
+
+_set_dlab	ENDP
+;|*** 
+;|*** getsrc()
+;|*** 
+;|*** {
+; Line 503
+	PUBLIC	_getsrc
+_getsrc	PROC NEAR
+;	v = -4
+;	src = -6
+;	port = -2
+;|***     int   v,src;
+;|***     int   port;
+;|*** 
+;|***     port=UART_PORT_ADDRESS;             /* get base address     */
+;|***     v=inp(port+2);                      /* get data             */
+;|***     src=v & 0x0e;                       /* mask bits            */
+;|***     src=src/2;                          /* divide by 2          */
+;|***     return(src);                        /* and pass it back     */
+; Line 511
+	*** 0005b6	ba 22 02 		mov	dx,546
+	*** 0005b9	ec 			in	al,dx
+	*** 0005ba	24 0e 			and	al,14
+	*** 0005bc	d0 e8 			shr	al,1
+	*** 0005be	2a e4 			sub	ah,ah
+;|*** }
+; Line 512
+	*** 0005c0	c3 			ret	
+	*** 0005c1	90 			nop	
+
+_getsrc	ENDP
+;|*** 
+;|*** set_bank(bank_num)
+;|*** 
+;|*** /* set bank of 82050 uart */
+;|*** 
+;|*** int  bank_num;
+; Line 518
+	PUBLIC	_set_bank
+_set_bank	PROC NEAR
+	*** 0005c2	55 			push	bp
+	*** 0005c3	8b ec 			mov	bp,sp
+;	bank_num = 4
+;	reg_val = -2
+;	port = -4
+;|*** 
+;|*** {
+;|***     int reg_val;
+;|***     int   port;
+;|*** 
+;|***     reg_val=bank_num*0x20;              /* select bank numb */
+;|***     port=UART_PORT_ADDRESS;             /* get real port    */
+;|***     outp(port+gir_addr,reg_val);        /* output      */
+; Line 526
+	*** 0005c5	8b 46 04 		mov	ax,WORD PTR [bp+4]	;bank_num
+	*** 0005c8	c1 e0 05 		shl	ax,5
+	*** 0005cb	ba 22 02 		mov	dx,546
+	*** 0005ce	ee 			out	dx, al
+
+;|*** }
+; Line 527
+	*** 0005cf	c9 			leave	
+	*** 0005d0	c3 			ret	
+	*** 0005d1	90 			nop	
+
+_set_bank	ENDP
+;|*** 
+;|*** void reset_dlab (bank)
+;|*** 
+;|*** /*  Reset DLAB bit of LCR   */
+;|*** 
+;|*** int bank;
+; Line 533
+	PUBLIC	_reset_dlab
+_reset_dlab	PROC NEAR
+	*** 0005d2	55 			push	bp
+	*** 0005d3	8b ec 			mov	bp,sp
+	*** 0005d5	56 			push	si
+;	bank = 4
+;	register si = inval
+;	port = -2
+;|*** 
+;|*** {
+;|***     int  inval;
+;|***     int  port;
+;|*** 
+;|***     port=UART_PORT_ADDRESS;
+;|***     set_bank (00);
+; Line 540
+	*** 0005d6	6a 00 			push	0
+	*** 0005d8	e8 e7 ff 		call	_set_bank
+	*** 0005db	83 c4 02 		add	sp,2
+;|***     inval=inp (port +3);
+; Line 541
+	*** 0005de	ba 23 02 		mov	dx,547
+	*** 0005e1	ec 			in	al,dx
+	*** 0005e2	2a e4 			sub	ah,ah
+	*** 0005e4	8b f0 			mov	si,ax
+;|***     inval = (inval & 0x7f);             /* dlab = 0 in LCR      */
+; Line 542
+	*** 0005e6	83 e6 7f 		and	si,127
+;|***     outp ((port+3),inval);
+; Line 543
+	*** 0005e9	8b c6 			mov	ax,si
+	*** 0005eb	ee 			out	dx, al
+
+;|***     set_bank (bank);
+; Line 544
+	*** 0005ec	ff 76 04 		push	WORD PTR [bp+4]	;bank
+	*** 0005ef	e8 d0 ff 		call	_set_bank
+	*** 0005f2	83 c4 02 		add	sp,2
+;|*** }
+; Line 545
+	*** 0005f5	5e 			pop	si
+	*** 0005f6	c9 			leave	
+	*** 0005f7	c3 			ret	
+
+_reset_dlab	ENDP
+;|*** 
+;|*** /* 82050 interrupt handler */
+;|*** 
+;|*** void interrupt_handler ()
+;|*** {
+; Line 550
+	PUBLIC	_interrupt_handler
+_interrupt_handler	PROC NEAR
+	*** 0005f8	56 			push	si
+;	rupt_dev = -14
+;	source = -2
+;	cmd_b = -8
+;	st_b = -12
+;	port = -2
+;	temp = -10
+;	register si = rxlevel
+;|***     int  rupt_dev;
+;|***     int  source;
+;|***     int  cmd_b;
+;|***     int  st_b;
+;|***     int  port;
+;|***     int  temp;
+;|***     int  rxlevel;
+;|*** 
+;|*** 
+;|***     port=UART_PORT_ADDRESS;
+;|***     outp((port+2),0x20);                /* switch to bank 1     */
+; Line 561
+	*** 0005f9	b8 20 00 		mov	ax,32
+	*** 0005fc	ba 22 02 		mov	dx,546
+	*** 0005ff	ee 			out	dx, al
+
+;|***     source = getsrc ();                 /* get vector           */
+;|***     switch (source)
+; Line 563
+	*** 000600	e8 b3 ff 		call	_getsrc
+;|***     {
+;|*** 
+;|***     /* optional timer service routine */
+;|*** 
+;|***     case timer :
+;|*** 
+;|***         st_b=inp (port+3);              /* dec transmit count   */
+;|***         if ( ThisReadRP == 0)           /* nobody waiting       */
+;|***             break;
+;|***         ThisReadRP->RPstatus=(RPDONE|RPERR|ERROR_NOT_READY);
+;|***         Run ((ULONG)  ThisWriteRP);     /* run thread           */
+;|***         ThisWriteRP=0;
+;|***         break;
+;|*** 
+;|***     case txm   :
+;|***     case txf   :
+;|*** 
+;|***         /* spurious write interrupt */
+;|*** 
+;|***         if ( ThisWriteRP == 0) {
+;|***             temp=inp(port+2);
+;|***             break;
+;|***         }
+;|*** 
+;|***         /* keep transmitting until no data left */
+;|*** 
+;|***         if  (!(QueueRead(&tx_queue,&outchar)))
+;|***         {
+;|***              outp((port), outchar);
+;|***              tickcount=MIN_TIMEOUT;
+;|***              break;
+;|***         }
+;|*** 
+;|***         /* done writing, run blocked thread     */
+;|*** 
+;|***         tickcount=MIN_TIMEOUT;
+;|***         disable_write();
+;|***         ThisWriteRP->RPstatus = (RPDONE);
+;|***         Run ((ULONG)  ThisWriteRP);
+;|***         ThisWriteRP=0;
+;|***         break;
+;|*** 
+;|***     case ccr   :
+;|*** 
+;|***         /* control character, treat as normal   */
+;|*** 
+;|***         inchar=inp(port+5);
+;|*** 
+;|***     case rxf   :
+;|*** 
+;|***         /* rx fifo service routine */
+;|*** 
+;|***         if ( ThisReadRP == 0)
+;|***             inchar=inp (port); /* get character */
+;|***         else
+;|***         {
+;|***         temp=inp(port+4);
+;|***         rxlevel=(temp & 0x70) / 0x10;
+;|*** 
+;|***          /* empty out chip FIFO */
+;|*** 
+;|***          while (rxlevel !=0) {
+;|*** 
+;|***            inchar=inp (port); /* get character */
+;|***            rxlevel--;
+;|***            tickcount=MIN_TIMEOUT;
+;|*** 
+;|***            /* write input data to queue */
+;|*** 
+;|***            if(QueueWrite(&rx_queue,inchar))
+;|*** 
+;|***              /* error, queue must be full */
+;|*** 
+;|***              {
+;|***              ThisReadRP->RPstatus=(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|***              Run ((ULONG) ThisReadRP);
+;|***              ThisReadRP=0;
+;|***              break;
+;|***              }
+;|***            com_error_word |= inp(port+5);
+;|*** 
+;|***         } /* while rxlevel */
+;|***      } /* else */
+;|***   } /* switch (source) */
+; Line 647
+	*** 000603	48 			dec	ax
+	*** 000604	74 14 			je	$SC512
+	*** 000606	48 			dec	ax
+	*** 000607	74 7a 			je	$SC516
+	*** 000609	48 			dec	ax
+	*** 00060a	74 70 			je	$SC515
+	*** 00060c	48 			dec	ax
+	*** 00060d	74 0b 			je	$SC512
+	*** 00060f	48 			dec	ax
+	*** 000610	75 03 			jne	$JCC1552
+	*** 000612	e9 81 00 		jmp	$SC510
+					$JCC1552:
+	*** 000615	e9 f5 00 		jmp	$EX498
+	*** 000618	90 			nop	
+	*** 000619	90 			nop	
+;|***     case txm   :
+; Line 578
+					$SC512:
+;|***     case txf   :
+;|*** 
+;|***         /* spurious write interrupt */
+;|*** 
+;|***         if ( ThisWriteRP == 0) {
+; Line 583
+	*** 00061a	a1 3a 00 		mov	ax,WORD PTR _ThisWriteRP+2
+	*** 00061d	0b 06 38 00 		or	ax,WORD PTR _ThisWriteRP
+	*** 000621	75 07 			jne	$I513
+;|***             temp=inp(port+2);
+; Line 584
+	*** 000623	ba 22 02 		mov	dx,546
+	*** 000626	ec 			in	al,dx
+;|***             break;
+; Line 585
+	*** 000627	5e 			pop	si
+	*** 000628	c3 			ret	
+	*** 000629	90 			nop	
+;|***         }
+;|*** 
+;|***         /* keep transmitting until no data left */
+;|*** 
+;|***         if  (!(QueueRead(&tx_queue,&outchar)))
+; Line 590
+					$I513:
+	*** 00062a	68 00 00 		push	OFFSET DGROUP:_tx_queue
+	*** 00062d	1e 			push	ds
+	*** 00062e	68 00 00 		push	OFFSET DGROUP:_outchar
+	*** 000631	e8 00 00 		call	QUEUEREAD
+	*** 000634	0b c0 			or	ax,ax
+	*** 000636	75 16 			jne	$I514
+;|***         {
+;|***              outp((port), outchar);
+; Line 592
+	*** 000638	a0 00 00 		mov	al,BYTE PTR _outchar
+	*** 00063b	98 			cbw	
+	*** 00063c	ba 20 02 		mov	dx,544
+	*** 00063f	ee 			out	dx, al
+
+;|***              tickcount=MIN_TIMEOUT;
+; Line 593
+	*** 000640	c7 06 00 00 88 13 	mov	WORD PTR _tickcount,5000
+	*** 000646	c7 06 02 00 00 00 	mov	WORD PTR _tickcount+2,0
+;|***              break;
+; Line 594
+	*** 00064c	5e 			pop	si
+	*** 00064d	c3 			ret	
+;|***         }
+;|*** 
+;|***         /* done writing, run blocked thread     */
+;|*** 
+;|***         tickcount=MIN_TIMEOUT;
+; Line 599
+					$I514:
+	*** 00064e	c7 06 00 00 88 13 	mov	WORD PTR _tickcount,5000
+	*** 000654	c7 06 02 00 00 00 	mov	WORD PTR _tickcount+2,0
+;|***         disable_write();
+; Line 600
+	*** 00065a	e8 21 fe 		call	_disable_write
+;|***         ThisWriteRP->RPstatus = (RPDONE);
+; Line 601
+	*** 00065d	c4 1e 38 00 		les	bx,DWORD PTR _ThisWriteRP
+	*** 000661	26 c7 47 03 00 01 	mov	WORD PTR es:[bx+3],256
+;|***         Run ((ULONG)  ThisWriteRP);
+; Line 602
+					$L20018:
+	*** 000667	ff 36 3a 00 		push	WORD PTR _ThisWriteRP+2
+	*** 00066b	ff 36 38 00 		push	WORD PTR _ThisWriteRP
+	*** 00066f	e8 00 00 		call	RUN
+;|***         ThisWriteRP=0;
+; Line 603
+	*** 000672	2b c0 			sub	ax,ax
+	*** 000674	a3 3a 00 		mov	WORD PTR _ThisWriteRP+2,ax
+	*** 000677	a3 38 00 		mov	WORD PTR _ThisWriteRP,ax
+;|***         break;
+; Line 604
+	*** 00067a	5e 			pop	si
+	*** 00067b	c3 			ret	
+;|*** 
+;|***     case ccr   :
+; Line 606
+					$SC515:
+;|*** 
+;|***         /* control character, treat as normal   */
+;|*** 
+;|***         inchar=inp(port+5);
+; Line 610
+	*** 00067c	ba 25 02 		mov	dx,549
+	*** 00067f	ec 			in	al,dx
+	*** 000680	a2 00 00 		mov	BYTE PTR _inchar,al
+					$SC516:
+;|*** 
+;|***     case rxf   :
+;|*** 
+;|***         /* rx fifo service routine */
+;|*** 
+;|***         if ( ThisReadRP == 0)
+; Line 616
+	*** 000683	a1 36 00 		mov	ax,WORD PTR _ThisReadRP+2
+	*** 000686	0b 06 34 00 		or	ax,WORD PTR _ThisReadRP
+	*** 00068a	75 24 			jne	$I517
+;|***             inchar=inp (port); /* get character */
+; Line 617
+	*** 00068c	ba 20 02 		mov	dx,544
+	*** 00068f	ec 			in	al,dx
+	*** 000690	a2 00 00 		mov	BYTE PTR _inchar,al
+;|***         else
+; Line 618
+	*** 000693	5e 			pop	si
+	*** 000694	c3 			ret	
+	*** 000695	90 			nop	
+;|***     case timer :
+; Line 568
+					$SC510:
+;|*** 
+;|***         st_b=inp (port+3);              /* dec transmit count   */
+; Line 570
+	*** 000696	ba 23 02 		mov	dx,547
+	*** 000699	ec 			in	al,dx
+;|***         if ( ThisReadRP == 0)           /* nobody waiting       */
+; Line 571
+	*** 00069a	a1 36 00 		mov	ax,WORD PTR _ThisReadRP+2
+	*** 00069d	0b 06 34 00 		or	ax,WORD PTR _ThisReadRP
+	*** 0006a1	74 6a 			je	$EX498
+;|***             break;
+;|***         ThisReadRP->RPstatus=(RPDONE|RPERR|ERROR_NOT_READY);
+; Line 573
+	*** 0006a3	c4 1e 34 00 		les	bx,DWORD PTR _ThisReadRP
+	*** 0006a7	26 c7 47 03 02 81 	mov	WORD PTR es:[bx+3],-32510
+	*** 0006ad	eb b8 			jmp	SHORT $L20018
+	*** 0006af	90 			nop	
+;|***         Run ((ULONG)  ThisWriteRP);     /* run thread           */
+;|***         ThisWriteRP=0;
+;|***         break;
+;|*** 
+;|***     case txm   :
+;|***     case txf   :
+;|*** 
+;|***         /* spurious write interrupt */
+;|*** 
+;|***         if ( ThisWriteRP == 0) {
+;|***             temp=inp(port+2);
+;|***             break;
+;|***         }
+;|*** 
+;|***         /* keep transmitting until no data left */
+;|*** 
+;|***         if  (!(QueueRead(&tx_queue,&outchar)))
+;|***         {
+;|***              outp((port), outchar);
+;|***              tickcount=MIN_TIMEOUT;
+;|***              break;
+;|***         }
+;|*** 
+;|***         /* done writing, run blocked thread     */
+;|*** 
+;|***         tickcount=MIN_TIMEOUT;
+;|***         disable_write();
+;|***         ThisWriteRP->RPstatus = (RPDONE);
+;|***         Run ((ULONG)  ThisWriteRP);
+;|***         ThisWriteRP=0;
+;|***         break;
+;|*** 
+;|***     case ccr   :
+;|*** 
+;|***         /* control character, treat as normal   */
+;|*** 
+;|***         inchar=inp(port+5);
+;|*** 
+;|***     case rxf   :
+; Line 612
+					$I517:
+;|*** 
+;|***         /* rx fifo service routine */
+;|*** 
+;|***         if ( ThisReadRP == 0)
+;|***             inchar=inp (port); /* get character */
+;|***         else
+;|***         {
+;|***         temp=inp(port+4);
+;|***         rxlevel=(temp & 0x70) / 0x10;
+; Line 621
+	*** 0006b0	ba 24 02 		mov	dx,548
+	*** 0006b3	ec 			in	al,dx
+	*** 0006b4	24 70 			and	al,112
+	*** 0006b6	c0 e8 04 		shr	al,4
+	*** 0006b9	2a e4 			sub	ah,ah
+	*** 0006bb	8b f0 			mov	si,ax
+;|*** 
+;|***          /* empty out chip FIFO */
+;|*** 
+;|***          while (rxlevel !=0) {
+; Line 625
+	*** 0006bd	0b f6 			or	si,si
+	*** 0006bf	74 4c 			je	$EX498
+					$FC520:
+;|*** 
+;|***            inchar=inp (port); /* get character */
+;|***            rxlevel--;
+; Line 628
+	*** 0006c1	4e 			dec	si
+;|***            tickcount=MIN_TIMEOUT;
+; Line 629
+	*** 0006c2	c7 06 00 00 88 13 	mov	WORD PTR _tickcount,5000
+	*** 0006c8	c7 06 02 00 00 00 	mov	WORD PTR _tickcount+2,0
+;|*** 
+;|***            /* write input data to queue */
+;|*** 
+;|***            if(QueueWrite(&rx_queue,inchar))
+; Line 633
+	*** 0006ce	68 00 00 		push	OFFSET DGROUP:_rx_queue
+	*** 0006d1	ba 20 02 		mov	dx,544
+	*** 0006d4	ec 			in	al,dx
+	*** 0006d5	a2 00 00 		mov	BYTE PTR _inchar,al
+	*** 0006d8	50 			push	ax
+	*** 0006d9	e8 00 00 		call	QUEUEWRITE
+	*** 0006dc	0b c0 			or	ax,ax
+	*** 0006de	75 10 			jne	$L20008
+;|*** 
+;|***              /* error, queue must be full */
+;|*** 
+;|***              {
+;|***              ThisReadRP->RPstatus=(RPDONE|RPERR|ERROR_GEN_FAILURE);
+;|***              Run ((ULONG) ThisReadRP);
+;|***              ThisReadRP=0;
+;|***              break;
+;|***              }
+;|***            com_error_word |= inp(port+5);
+; Line 643
+	*** 0006e0	ba 25 02 		mov	dx,549
+	*** 0006e3	ec 			in	al,dx
+	*** 0006e4	2a e4 			sub	ah,ah
+	*** 0006e6	09 06 00 00 		or	WORD PTR _com_error_word,ax
+;|*** 
+;|***         } /* while rxlevel */
+; Line 645
+	*** 0006ea	0b f6 			or	si,si
+	*** 0006ec	75 d3 			jne	$FC520
+	*** 0006ee	5e 			pop	si
+	*** 0006ef	c3 			ret	
+					$L20008:
+;|***              ThisReadRP->RPstatus=(RPDONE|RPERR|ERROR_GEN_FAILURE);
+; Line 638
+	*** 0006f0	c4 1e 34 00 		les	bx,DWORD PTR _ThisReadRP
+	*** 0006f4	26 c7 47 03 0c 81 	mov	WORD PTR es:[bx+3],-32500
+;|***              Run ((ULONG) ThisReadRP);
+; Line 639
+	*** 0006fa	ff 36 36 00 		push	WORD PTR _ThisReadRP+2
+	*** 0006fe	ff 36 34 00 		push	WORD PTR _ThisReadRP
+	*** 000702	e8 00 00 		call	RUN
+;|***              ThisReadRP=0;
+; Line 640
+	*** 000705	2b c0 			sub	ax,ax
+	*** 000707	a3 36 00 		mov	WORD PTR _ThisReadRP+2,ax
+	*** 00070a	a3 34 00 		mov	WORD PTR _ThisReadRP,ax
+;|***              break;
+;|***              }
+;|***            com_error_word |= inp(port+5);
+;|*** 
+;|***         } /* while rxlevel */
+;|***      } /* else */
+;|***   } /* switch (source) */
+;|*** }
+; Line 648
+					$EX498:
+	*** 00070d	5e 			pop	si
+	*** 00070e	c3 			ret	
+	*** 00070f	90 			nop	
+
+_interrupt_handler	ENDP
+;|*** void timer_handler()
+;|*** {
+; Line 650
+	PUBLIC	_timer_handler
+_timer_handler	PROC NEAR
+;|***   if (ThisReadRP == 0)
+; Line 651
+	*** 000710	a1 36 00 		mov	ax,WORD PTR _ThisReadRP+2
+	*** 000713	0b 06 34 00 		or	ax,WORD PTR _ThisReadRP
+	*** 000717	74 39 			je	$EX524
+;|***         return;
+;|*** 
+;|***   tickcount--;
+;|***   if(tickcount == 0)  {
+; Line 655
+	*** 000719	83 2e 00 00 01 		sub	WORD PTR _tickcount,1
+	*** 00071e	83 1e 02 00 00 		sbb	WORD PTR _tickcount+2,0
+	*** 000723	a1 02 00 		mov	ax,WORD PTR _tickcount+2
+	*** 000726	0b 06 00 00 		or	ax,WORD PTR _tickcount
+	*** 00072a	75 26 			jne	$EX524
+;|***     ThisReadRP->RPstatus=(RPDONE);
+; Line 656
+	*** 00072c	c4 1e 34 00 		les	bx,DWORD PTR _ThisReadRP
+	*** 000730	26 c7 47 03 00 01 	mov	WORD PTR es:[bx+3],256
+;|***     Run ((ULONG) ThisReadRP);
+; Line 657
+	*** 000736	ff 36 36 00 		push	WORD PTR _ThisReadRP+2
+	*** 00073a	ff 36 34 00 		push	WORD PTR _ThisReadRP
+	*** 00073e	e8 00 00 		call	RUN
+;|***     ThisReadRP=0L;
+; Line 658
+	*** 000741	2b c0 			sub	ax,ax
+	*** 000743	a3 36 00 		mov	WORD PTR _ThisReadRP+2,ax
+	*** 000746	a3 34 00 		mov	WORD PTR _ThisReadRP,ax
+;|***     tickcount=MIN_TIMEOUT;
+; Line 659
+	*** 000749	c7 06 00 00 88 13 	mov	WORD PTR _tickcount,5000
+	*** 00074f	a3 02 00 		mov	WORD PTR _tickcount+2,ax
+;|***     }
+;|*** }
+; Line 661
+					$EX524:
+	*** 000752	c3 			ret	
+	*** 000753	90 			nop	
+
+_timer_handler	ENDP
+;|*** 
+;|*** /* Device Initialization Routine */
+;|*** 
+;|*** int Init(PREQPACKET rp, int dev)
+;|*** {
+; Line 666
+	PUBLIC	_Init
+_Init	PROC NEAR
+	*** 000754	55 			push	bp
+	*** 000755	8b ec 			mov	bp,sp
+	*** 000757	57 			push	di
+	*** 000758	56 			push	si
+;	rp = 4
+;	dev = 8
+;	p = -4
+	*** 000759	8b 76 04 		mov	si,WORD PTR [bp+4]	;rp
+;|***     register char far *p;
+;|*** 
+;|***     /* store DevHlp entry point */
+;|*** 
+;|***     DevHlp = rp->s.Init.DevHlp;
+; Line 671
+	*** 00075c	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 00075f	26 8b 44 0e 		mov	ax,WORD PTR es:[si+14]
+	*** 000763	26 8b 54 10 		mov	dx,WORD PTR es:[si+16]
+	*** 000767	a3 1e 00 		mov	WORD PTR _DevHlp,ax
+	*** 00076a	89 16 20 00 		mov	WORD PTR _DevHlp+2,dx
+;|*** 
+;|***     /* install interrupt hook in vector */
+;|*** 
+;|***     if (SetTimer((PFUNCTION)TIM_HNDLR))
+; Line 675
+	*** 00076e	68 00 00 		push	OFFSET _TIM_HNDLR
+	*** 000771	e8 00 00 		call	SETTIMER
+	*** 000774	0b c0 			or	ax,ax
+	*** 000776	75 7e 			jne	$fail532
+;|***                 goto fail;
+;|*** 
+;|***     rx_queue.qsize=QUEUE_SIZE;
+;|***     tx_queue.qsize=QUEUE_SIZE; /* init queue    */
+; Line 679
+	*** 000778	b8 00 02 		mov	ax,512
+	*** 00077b	a3 00 00 		mov	WORD PTR _rx_queue,ax
+	*** 00077e	a3 00 00 		mov	WORD PTR _tx_queue,ax
+;|***     init();                    /* init the port */
+; Line 680
+	*** 000781	e8 1c fd 		call	_init
+;|***     tickcount=MIN_TIMEOUT;     /* set timeout   */
+; Line 681
+	*** 000784	c7 06 00 00 88 13 	mov	WORD PTR _tickcount,5000
+	*** 00078a	c7 06 02 00 00 00 	mov	WORD PTR _tickcount+2,0
+;|*** 
+;|***     if(SetIRQ(5,(PFUNCTION)INT_HNDLR,0)) {
+; Line 683
+	*** 000790	6a 05 			push	5
+	*** 000792	68 00 00 		push	OFFSET _INT_HNDLR
+	*** 000795	6a 00 			push	0
+	*** 000797	e8 00 00 		call	SETIRQ
+	*** 00079a	0b c0 			or	ax,ax
+	*** 00079c	75 58 			jne	$fail532
+;|*** 
+;|***      /* if we failed, deinstall driver cs+ds=0 */
+;|*** fail:
+;|***      DosPutMessage(1, 8, devhdr.DHname);
+;|***      DosPutMessage (1,strlen(IntFailMsg),IntFailMsg);
+;|***      rp->s.InitExit.finalCS = (OFF) 0;
+;|***      rp->s.InitExit.finalDS = (OFF) 0;
+;|***      return (RPDONE | RPERR | ERROR_BAD_COMMAND);
+;|***      }
+;|*** 
+;|*** /* output initialization message */
+;|*** 
+;|*** DosPutMessage(1, 8, devhdr.DHname);
+; Line 696
+	*** 00079e	6a 01 			push	1
+	*** 0007a0	6a 08 			push	8
+	*** 0007a2	1e 			push	ds
+	*** 0007a3	68 0a 00 		push	OFFSET DGROUP:_devhdr+10
+	*** 0007a6	9a 00 00 00 00 		call	FAR PTR DOSPUTMESSAGE
+;|*** DosPutMessage(1, strlen(MainMsg), MainMsg);
+; Line 697
+	*** 0007ab	6a 01 			push	1
+	*** 0007ad	b8 64 00 		mov	ax,OFFSET DGROUP:_MainMsg
+	*** 0007b0	8b d0 			mov	dx,ax
+	*** 0007b2	8b f8 			mov	di,ax
+	*** 0007b4	1e 			push	ds
+	*** 0007b5	07 			pop	es
+	*** 0007b6	b9 ff ff 		mov	cx,-1
+	*** 0007b9	33 c0 			xor	ax,ax
+	*** 0007bb	f2 			repnz
+	*** 0007bc	ae 			scasb
+	*** 0007bd	f7 d1 			not	cx
+	*** 0007bf	49 			dec	cx
+	*** 0007c0	51 			push	cx
+	*** 0007c1	1e 			push	ds
+	*** 0007c2	52 			push	dx
+	*** 0007c3	9a 00 00 00 00 		call	FAR PTR DOSPUTMESSAGE
+;|*** 
+;|*** /* send back our cs and ds values to os/2 */
+;|*** 
+;|*** if (SegLimit(HIUSHORT((void far *) Init),&rp->s.InitExit.finalCS)
+;|***     || SegLimit(HIUSHORT((void far *) MainMsg),
+;|***     &rp->s.InitExit.finalDS))
+; Line 703
+	*** 0007c8	0e 			push	cs
+	*** 0007c9	8b c6 			mov	ax,si
+	*** 0007cb	8b 56 06 		mov	dx,WORD PTR [bp+6]
+	*** 0007ce	05 0e 00 		add	ax,14
+	*** 0007d1	52 			push	dx
+	*** 0007d2	50 			push	ax
+	*** 0007d3	e8 00 00 		call	SEGLIMIT
+	*** 0007d6	0b c0 			or	ax,ax
+	*** 0007d8	75 10 			jne	$I535
+	*** 0007da	1e 			push	ds
+	*** 0007db	8b 4e 06 		mov	cx,WORD PTR [bp+6]
+	*** 0007de	83 c6 10 		add	si,16
+	*** 0007e1	51 			push	cx
+	*** 0007e2	56 			push	si
+	*** 0007e3	e8 00 00 		call	SEGLIMIT
+	*** 0007e6	0b c0 			or	ax,ax
+	*** 0007e8	74 03 			je	$I534
+					$I535:
+;|***      Abort();
+; Line 704
+	*** 0007ea	e8 00 00 		call	ABORT
+;|***    return(RPDONE);
+; Line 705
+					$I534:
+	*** 0007ed	b8 00 01 		mov	ax,256
+	*** 0007f0	5e 			pop	si
+	*** 0007f1	5f 			pop	di
+	*** 0007f2	c9 			leave	
+	*** 0007f3	c3 			ret	
+	*** 0007f4	90 			nop	
+	*** 0007f5	90 			nop	
+;|*** fail:
+; Line 686
+					$fail532:
+;|***      DosPutMessage(1, 8, devhdr.DHname);
+; Line 687
+	*** 0007f6	6a 01 			push	1
+	*** 0007f8	6a 08 			push	8
+	*** 0007fa	1e 			push	ds
+	*** 0007fb	68 0a 00 		push	OFFSET DGROUP:_devhdr+10
+	*** 0007fe	9a 00 00 00 00 		call	FAR PTR DOSPUTMESSAGE
+;|***      DosPutMessage (1,strlen(IntFailMsg),IntFailMsg);
+; Line 688
+	*** 000803	6a 01 			push	1
+	*** 000805	b8 3c 00 		mov	ax,OFFSET DGROUP:_IntFailMsg
+	*** 000808	8b d0 			mov	dx,ax
+	*** 00080a	8b f8 			mov	di,ax
+	*** 00080c	1e 			push	ds
+	*** 00080d	07 			pop	es
+	*** 00080e	b9 ff ff 		mov	cx,-1
+	*** 000811	33 c0 			xor	ax,ax
+	*** 000813	f2 			repnz
+	*** 000814	ae 			scasb
+	*** 000815	f7 d1 			not	cx
+	*** 000817	49 			dec	cx
+	*** 000818	51 			push	cx
+	*** 000819	1e 			push	ds
+	*** 00081a	52 			push	dx
+	*** 00081b	9a 00 00 00 00 		call	FAR PTR DOSPUTMESSAGE
+;|***      rp->s.InitExit.finalCS = (OFF) 0;
+;|***      rp->s.InitExit.finalDS = (OFF) 0;
+; Line 690
+	*** 000820	2b c0 			sub	ax,ax
+	*** 000822	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 000825	26 89 44 0e 		mov	WORD PTR es:[si+14],ax
+	*** 000829	26 89 44 10 		mov	WORD PTR es:[si+16],ax
+;|***      return (RPDONE | RPERR | ERROR_BAD_COMMAND);
+; Line 691
+	*** 00082d	b8 03 81 		mov	ax,-32509
+;|***      }
+;|*** 
+;|*** /* output initialization message */
+;|*** 
+;|*** DosPutMessage(1, 8, devhdr.DHname);
+;|*** DosPutMessage(1, strlen(MainMsg), MainMsg);
+;|*** 
+;|*** /* send back our cs and ds values to os/2 */
+;|*** 
+;|*** if (SegLimit(HIUSHORT((void far *) Init),&rp->s.InitExit.finalCS)
+;|***     || SegLimit(HIUSHORT((void far *) MainMsg),
+;|***     &rp->s.InitExit.finalDS))
+;|***      Abort();
+;|***    return(RPDONE);
+;|*** }
+; Line 706
+	*** 000830	5e 			pop	si
+	*** 000831	5f 			pop	di
+	*** 000832	c9 			leave	
+	*** 000833	c3 			ret	
+
+_Init	ENDP
+_TEXT	ENDS
+END
+;|*** 
+;|*** 

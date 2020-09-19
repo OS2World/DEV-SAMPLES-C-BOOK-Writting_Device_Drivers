@@ -1,0 +1,1253 @@
+;	Static Name Aliases
+;
+	TITLE   digio.c
+	.286p
+	.287
+_TEXT	SEGMENT  WORD PUBLIC 'CODE'
+_TEXT	ENDS
+_DATA	SEGMENT  WORD PUBLIC 'DATA'
+_DATA	ENDS
+CONST	SEGMENT  WORD PUBLIC 'CONST'
+CONST	ENDS
+_BSS	SEGMENT  WORD PUBLIC 'BSS'
+_BSS	ENDS
+DGROUP	GROUP	CONST, _BSS, _DATA
+	ASSUME DS: DGROUP
+	ASSUME  SS: NOTHING
+PUBLIC  _devhdr
+PUBLIC  _DevHlp
+PUBLIC  _opencount
+PUBLIC  _savepid
+PUBLIC  _appl_buffer
+PUBLIC  _err
+PUBLIC  _ReadID
+PUBLIC  _num_rupts
+PUBLIC  _appl_ptr
+PUBLIC  _CrLf
+PUBLIC  _InitMessage1
+PUBLIC  _InitMessage2
+PUBLIC  _FailMessage
+EXTRN	__acrtused:ABS
+EXTRN	PHYSTOVIRT:NEAR
+EXTRN	DOSPUTMESSAGE:FAR
+EXTRN	_STRATEGY:NEAR
+EXTRN	_TIMER_HANDLER:NEAR
+EXTRN	SETTIMER:NEAR
+EXTRN	ABORT:NEAR
+EXTRN	SEGLIMIT:NEAR
+EXTRN	MOVEBYTES:NEAR
+EXTRN	GETDOSVAR:NEAR
+EXTRN	BLOCK:NEAR
+EXTRN	RUN:NEAR
+EXTRN	VERIFYACCESS:NEAR
+EXTRN	LOCKSEG:NEAR
+EXTRN	UNLOCKSEG:NEAR
+_BSS      SEGMENT
+COMM NEAR	_lock_seg_han:	BYTE:	 4
+COMM NEAR	_temp_char:	BYTE:	 2
+COMM NEAR	_ptr:	BYTE:	 4
+COMM NEAR	_input_char:	BYTE:	 1
+COMM NEAR	_output_char:	BYTE:	 1
+COMM NEAR	_input_mask:	BYTE:	 1
+_BSS      ENDS
+_DATA      SEGMENT
+_devhdr	DD	0ffffffffH
+	DW	08880H
+	DW	_STRATEGY
+	DW	00H
+	DB	'DIGIO$  '
+ 	DB	12 DUP(0)
+
+_DevHlp	DD	00H
+_opencount	DB	00H
+	ORG	$+1
+_savepid	DW	00H
+_appl_buffer	DD	00H
+_err	DW	00H
+_ReadID	DD	00H
+_num_rupts	DW	00H
+_appl_ptr	DD	00H
+_CrLf	DB	0dH,  0aH,  00H
+	ORG	$+1
+_InitMessage1	DB	' 8 bit Digital I/O ',  00H
+_InitMessage2	DB	' driver installed',  0dH,  0aH,  00H
+_FailMessage	DB	' driver failed to install.',  0dH,  0aH,  00H
+_DATA      ENDS
+_TEXT      SEGMENT
+	ASSUME	CS: _TEXT
+;|*** /*
+; Line 1
+;|***    This driver supports DosOpen, DosClose, DosRead, DosWrite
+;|***    and IOCtl 0x91 codes 1, 2 and 3. All other driver calls and
+;|***    IOCtls are ignored (returns ERROR_BAD_COMMAND).
+;|*** 
+;|***    The driver also uses these #defs
+;|*** 
+;|***    #define  DIGIO_CAT    0x91         driver category       
+;|***    #define  DIGIO_BASE   0x2c0        base port address
+;|***    #define  DIGIO_OUTPUT DIGIO_BASE   output port
+;|***    #define  DIGIO_INPUT  DIGIO_BASE+1 input port
+;|***    #define  DIGIO_CONFIG DIGIO_BASE+3 initialization port
+;|*** 
+;|***    1. Open the driver with:
+;|*** 
+;|***       if ((RetCode=DosOpen("DIGIO$",
+;|***          &digio_handle,
+;|***          &ActionTaken,
+;|***          FileSize,
+;|***          FileAttribute,
+;|***          FILE_OPEN,
+;|***          OPEN_SHARE_DENYNONE | OPEN_FLAGS_FAIL_ON_ERROR
+;|***          | OPEN_ACCESS_READWRITE,Reserved)) !=0) 
+;|***             printf("\nopen error = %d",RetCode);
+;|*** 
+;|***    2. Output byte to the output port (base +0) with this IOCtl:
+;|***          
+;|***       DosDevIOCtl(NULL,&char,1,0x91,digio_handle);
+;|*** 
+;|***       or with this standard request:
+;|*** 
+;|***       DosWrite(digio_handle,&char,1,&bytes_written;
+;|*** 
+;|***    3. Read data from the input port (base + 1) with this IOCtl.
+;|***       The driver will block until the bit in specified in the
+;|***       mask is set:
+;|*** 
+;|***       DosDevIOCtl(&char,NULL,2,0x91,digio_handle);
+;|*** 
+;|***    4. Read data from the input port (base + 1) with this IOCtl.
+;|***       This IOCtl returns immediately with the status:
+;|*** 
+;|***       DosDevIOCtl(&char,NULL,3,0x91,digio_handle);
+;|*** 
+;|***       or with this standard driver request:
+;|*** 
+;|***       DosRead(digio_handle,&char,1,&bytes_read;
+;|*** */
+;|*** 
+;|*** #include "drvlib.h"
+; Line 50
+;|*** #include "digio.h"
+; Line 51
+;|*** 
+;|*** extern void STRATEGY();       /* name of strat rout. in drvstart*/
+;|*** extern void TIMER_HANDLER();  /* timer handler in drvstart      */
+;|*** 
+;|*** DEVICEHDR devhdr = {
+;|***     (void far *) 0xFFFFFFFF,  /* link                           */
+;|***     (DAW_CHR | DAW_OPN | DAW_LEVEL1),/* attribute word          */
+;|***     (OFF) STRATEGY,           /* &strategy                      */
+;|***     (OFF) 0,                  /* &IDC routine                   */
+;|***     "DIGIO$  "                /* name/#units                    */
+;|*** };
+;|*** 
+;|*** FPFUNCTION  DevHlp=0;         /* pointer to DevHlp entry point  */
+;|*** UCHAR       opencount = 0;    /* keeps track of open's          */
+;|*** USHORT      savepid=0;        /* save thread pid                */
+;|*** LHANDLE     lock_seg_han;     /* handle for locking appl. seg   */
+;|*** PHYSADDR    appl_buffer=0;    /* address of caller's buffer     */
+;|*** ERRCODE     err=0;            /* error return                   */
+;|*** ULONG       ReadID=0L;        /* current read pointer           */
+;|*** USHORT      num_rupts=0;      /* count of interrupts            */
+;|*** USHORT      temp_char;        /* temp character for in-out      */
+;|*** void        far *ptr;         /* temp far pointer               */
+;|*** FARPOINTER  appl_ptr=0;       /* pointer to application buffer  */
+;|*** char        input_char,output_char; /* temp character storage   */
+;|*** char        input_mask;       /* mask for input byte            */
+;|*** 
+;|*** /* messages */
+;|*** 
+;|*** char     CrLf[]= "\r\n"; 
+;|*** char     InitMessage1[] = " 8 bit Digital I/O ";
+;|*** char     InitMessage2[] = " driver installed\r\n";
+;|*** char     FailMessage[]  = " driver failed to install.\r\n";
+;|*** 
+;|*** /* common entry point for calls to Strategy routines */
+;|*** 
+;|*** int main(PREQPACKET rp)
+;|*** {
+; Line 88
+	PUBLIC	_main
+_main	PROC NEAR
+	*** 000000	c8 08 00 00 		enter	8,0
+	*** 000004	56 			push	si
+;	rp = 4
+;	ptr = -8
+;	liptr = -4
+;	i = -6
+	*** 000005	c4 76 04 		les	si,DWORD PTR [bp+4]	;rp
+;|***     void far *ptr;     
+;|***     PLINFOSEG liptr;             /* pointer to global info seg  */
+;|***     int i;
+;|***     
+;|***     switch(rp->RPcommand)
+; Line 93
+	*** 000008	26 8a 44 02 		mov	al,BYTE PTR es:[si+2]
+	*** 00000c	2a e4 			sub	ah,ah
+;|***     {
+;|***     case RPINIT:                 /* 0x00                        */
+;|*** 
+;|***         /* init called by kernel in protected mode */
+;|*** 
+;|***         return Init(rp);
+;|*** 
+;|***     case RPREAD:                 /* 0x04                        */
+;|*** 
+;|***         rp->s.ReadWrite.count = 0; /* in case we fail           */
+;|***         
+;|***         input_char = inp(DIGIO_INPUT);/* get data               */
+;|*** 
+;|***         if (PhysToVirt( (ULONG) rp->s.ReadWrite.buffer,
+;|***            1,0,&appl_ptr))
+;|***              return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***         if (MoveBytes(&input_char,appl_ptr,1)) /* move one byte */
+;|***              return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***         rp->s.ReadWrite.count = 1;  /* one byte read           */
+;|***         return (RPDONE);
+;|*** 
+;|***     case RPWRITE:                /* 0x08                       */
+;|*** 
+;|***         rp->s.ReadWrite.count = 0;
+;|*** 
+;|***         if (PhysToVirt( (ULONG) rp->s.ReadWrite.buffer,
+;|***            1,0,&appl_ptr))
+;|***              return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***         if (MoveBytes(appl_ptr,&output_char,1)) /* move 1 byte */
+;|***              return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***         outp (DIGIO_OUTPUT,output_char); /* send byte          */
+;|*** 
+;|***         rp->s.ReadWrite.count = 1; /* one byte written         */
+;|***         return (RPDONE);
+;|*** 
+;|***     case RPOPEN:                 /* 0x0d open driver           */
+;|*** 
+;|***         /* get current process id */
+;|*** 
+;|***         if (GetDOSVar(2,&ptr))
+;|***             return (RPDONE | RPERR | ERROR_BAD_COMMAND);
+;|*** 
+;|***         /* get process info */
+;|*** 
+;|***         liptr = *((PLINFOSEG far *) ptr);
+;|*** 
+;|***         /* if this device never opened, can be opened by anyone*/
+;|*** 
+;|***         if (opencount == 0)      /* first time this dev opened */
+;|***         {
+;|***             opencount=1;         /* bump open counter          */
+;|***             savepid = liptr->pidCurrent; /* save current PID   */
+;|***         }
+;|***         else
+;|***             {
+;|***             if (savepid != liptr->pidCurrent) /* another proc  */
+;|***                 return (RPDONE | RPERR | ERROR_NOT_READY);/*err*/
+;|***             ++opencount;         /* bump counter, same pid     */
+;|***         }
+;|***         return (RPDONE);
+;|*** 
+;|***     case RPCLOSE:                /* 0x0e DosClose,ctl-C, kill  */
+;|*** 
+;|***         /* get process info of caller */
+;|*** 
+;|***         if (GetDOSVar(2,&ptr))
+;|***             return (RPDONE | RPERR | ERROR_BAD_COMMAND); 
+;|*** 
+;|***         /* get process info from os/2 */
+;|*** 
+;|***         liptr= *((PLINFOSEG far *) ptr); /* ptr to linfoseg    */
+;|*** 
+;|***         /* 
+;|***         make sure that process attempting to close this device
+;|***         is the one that originally opened it and the device was
+;|***         open in the first place.
+;|***         */
+;|*** 
+;|***         if (savepid != liptr->pidCurrent || opencount == 0)  
+;|***             return (RPDONE | RPERR | ERROR_BAD_COMMAND);
+;|*** 
+;|***         --opencount;             /* close counts down open cntr*/
+;|***          return (RPDONE);        /* return 'done' status       */
+;|*** 
+;|***     case RPIOCTL:                /* 0x10                       */
+;|*** 
+;|***         /*
+;|***         The function code in an IOCtl packet has the high bit set
+;|***         for the DIGIO$ board. We return all others with the done
+;|***         bit set so we don't have to handle things like the 5-48
+;|***         code page IOCtl
+;|***         */
+;|*** 
+;|***         if (rp->s.IOCtl.category != DIGIO_CAT)/* other IOCtls  */
+;|***             return (RPDONE | RPERR | ERROR_BAD_COMMAND);
+;|*** 
+;|***         switch (rp->s.IOCtl.function)
+;|***         {
+;|*** 
+;|***         case 0x01:               /* write byte to digio port   */
+;|*** 
+;|***             /* verify caller owns this buffer area */
+;|*** 
+;|***             if(VerifyAccess(
+;|***             SELECTOROF(rp->s.IOCtl.parameters), /* selector    */
+;|***             OFFSETOF(rp->s.IOCtl.parameters),   /* offset      */
+;|***             1,                                  /* 1 byte      */
+;|***             0) )                                /* read only   */
+;|***                 return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             if(MoveBytes(rp->s.IOCtl.parameters,&output_char,1))
+;|***                 return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             outp(DIGIO_OUTPUT,output_char);     /*send to digio*/
+;|***             return (RPDONE);
+;|*** 
+;|***         case 0x02:               /* read byte w/wait from port */
+;|*** 
+;|***             /* verify caller owns this buffer area */
+;|*** 
+;|***             if(VerifyAccess(
+;|***             SELECTOROF(rp->s.IOCtl.buffer), /* selector        */
+;|***             OFFSETOF(rp->s.IOCtl.buffer),   /* offset          */
+;|***             1,                              /* 1 bytes)        */
+;|***             0))                             /* read only       */
+;|***                return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* lock the segment down temp */
+;|*** 
+;|***             if(LockSeg(
+;|***             SELECTOROF(rp->s.IOCtl.buffer), /* selector        */
+;|***             1,                              /* lock forever    */
+;|***             0,                              /* wait for seg loc*/
+;|***             (PLHANDLE) &lock_seg_han))      /* handle returned */
+;|***                return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             if(MoveBytes(rp->s.IOCtl.parameters,&input_mask,1))
+;|***                 return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* wait for switch to be pressed */
+;|***  
+;|***             ReadID = (ULONG)rp;             /* block ID        */
+;|***             if (Block(ReadID,-1L,0,&err))
+;|***               if (err == 2)
+;|***                 return(RPDONE | RPERR
+;|***                        | ERROR_CHAR_CALL_INTERRUPTED);
+;|***             
+;|***             /* move data to users buffer */
+;|***  
+;|***             if(MoveBytes(&input_char,rp->s.IOCtl.buffer,1))
+;|***                 return(RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* unlock segment */
+;|*** 
+;|***             if(UnLockSeg(lock_seg_han))
+;|***                 return(RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|***  
+;|***             return (RPDONE);
+;|*** 
+;|***         case 0x03:               /* read byte immed digio port */
+;|*** 
+;|***             /* verify caller owns this buffer area */
+;|*** 
+;|***             if(VerifyAccess(
+;|***             SELECTOROF(rp->s.IOCtl.buffer), /* selector        */
+;|***             OFFSETOF(rp->s.IOCtl.buffer),   /* offset          */
+;|***             4,                              /* 4 bytes         */
+;|***             0))                             /* read only       */
+;|***                 return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             input_char = inp(DIGIO_INPUT);  /* get data        */
+;|*** 
+;|***             if(MoveBytes(&input_char,rp->s.IOCtl.buffer,1))
+;|***                 return(RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             return (RPDONE);
+;|*** 
+;|***         default:
+;|***             return(RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|***         }
+;|*** 
+;|***         /* don't allow deinstall */
+;|*** 
+;|***     case RPDEINSTALL:            /* 0x14                       */
+;|***         return(RPDONE | RPERR | ERROR_BAD_COMMAND);
+;|*** 
+;|***         /* all other commands are flagged as bad */
+;|*** 
+;|***     default:
+;|***         return(RPDONE | RPERR | ERROR_BAD_COMMAND);
+;|*** 
+;|***     }
+; Line 289
+	*** 00000e	3d 14 00 		cmp	ax,20
+	*** 000011	76 03 			jbe	$JCC17
+	*** 000013	e9 82 02 		jmp	$SC401
+					$JCC17:
+	*** 000016	d1 e0 			shl	ax,1
+	*** 000018	93 			xchg	ax,bx
+	*** 000019	2e ff a7 1e 00 		jmp	WORD PTR cs:$L20000[bx]
+					$L20000:
+	*** 00001e	48 00 				DW	$SC363
+	*** 000020	98 02 				DW	$L20003
+	*** 000022	98 02 				DW	$L20003
+	*** 000024	98 02 				DW	$L20003
+	*** 000026	56 00 				DW	$SC365
+	*** 000028	98 02 				DW	$L20003
+	*** 00002a	98 02 				DW	$L20003
+	*** 00002c	98 02 				DW	$L20003
+	*** 00002e	a4 00 				DW	$SC368
+	*** 000030	98 02 				DW	$L20003
+	*** 000032	98 02 				DW	$L20003
+	*** 000034	98 02 				DW	$L20003
+	*** 000036	98 02 				DW	$L20003
+	*** 000038	e0 00 				DW	$SC371
+	*** 00003a	2e 01 				DW	$SC376
+	*** 00003c	98 02 				DW	$L20003
+	*** 00003e	62 01 				DW	$SC380
+	*** 000040	98 02 				DW	$L20003
+	*** 000042	98 02 				DW	$L20003
+	*** 000044	98 02 				DW	$L20003
+	*** 000046	98 02 				DW	$SC401
+;|***     case RPINIT:                 /* 0x00                        */
+; Line 95
+					$SC363:
+;|*** 
+;|***         /* init called by kernel in protected mode */
+;|*** 
+;|***         return Init(rp);
+; Line 99
+	*** 000048	8c c0 			mov	ax,es
+	*** 00004a	50 			push	ax
+	*** 00004b	56 			push	si
+	*** 00004c	e8 00 00 		call	_Init
+	*** 00004f	83 c4 04 		add	sp,4
+	*** 000052	5e 			pop	si
+	*** 000053	c9 			leave	
+	*** 000054	c3 			ret	
+	*** 000055	90 			nop	
+;|*** 
+;|***     case RPREAD:                 /* 0x04                        */
+; Line 101
+					$SC365:
+;|*** 
+;|***         rp->s.ReadWrite.count = 0; /* in case we fail           */
+; Line 103
+	*** 000056	26 c7 44 12 00 00 	mov	WORD PTR es:[si+18],0
+;|***         
+;|***         input_char = inp(DIGIO_INPUT);/* get data               */
+; Line 105
+	*** 00005c	ba c1 02 		mov	dx,705
+	*** 00005f	ec 			in	al,dx
+	*** 000060	a2 00 00 		mov	BYTE PTR _input_char,al
+;|*** 
+;|***         if (PhysToVirt( (ULONG) rp->s.ReadWrite.buffer,
+;|***            1,0,&appl_ptr))
+; Line 108
+	*** 000063	26 ff 74 10 		push	WORD PTR es:[si+16]
+	*** 000067	26 ff 74 0e 		push	WORD PTR es:[si+14]
+	*** 00006b	6a 01 			push	1
+	*** 00006d	6a 00 			push	0
+	*** 00006f	1e 			push	ds
+	*** 000070	68 32 00 		push	OFFSET DGROUP:_appl_ptr
+	*** 000073	e8 00 00 		call	PHYSTOVIRT
+	*** 000076	0b c0 			or	ax,ax
+	*** 000078	74 06 			je	$I366
+;|***              return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+; Line 109
+					$L20004:
+	*** 00007a	b8 0c 81 		mov	ax,-32500
+	*** 00007d	5e 			pop	si
+	*** 00007e	c9 			leave	
+	*** 00007f	c3 			ret	
+;|*** 
+;|***         if (MoveBytes(&input_char,appl_ptr,1)) /* move one byte */
+; Line 111
+					$I366:
+	*** 000080	1e 			push	ds
+	*** 000081	68 00 00 		push	OFFSET DGROUP:_input_char
+	*** 000084	ff 36 34 00 		push	WORD PTR _appl_ptr+2
+	*** 000088	ff 36 32 00 		push	WORD PTR _appl_ptr
+	*** 00008c	6a 01 			push	1
+	*** 00008e	e8 00 00 		call	MOVEBYTES
+	*** 000091	0b c0 			or	ax,ax
+	*** 000093	75 e5 			jne	$L20004
+;|***              return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***         rp->s.ReadWrite.count = 1;  /* one byte read           */
+; Line 114
+					$I367:
+	*** 000095	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 000098	26 c7 44 12 01 00 	mov	WORD PTR es:[si+18],1
+;|***         return (RPDONE);
+; Line 115
+					$L20005:
+	*** 00009e	b8 00 01 		mov	ax,256
+	*** 0000a1	5e 			pop	si
+	*** 0000a2	c9 			leave	
+	*** 0000a3	c3 			ret	
+;|*** 
+;|***     case RPWRITE:                /* 0x08                       */
+; Line 117
+					$SC368:
+;|*** 
+;|***         rp->s.ReadWrite.count = 0;
+; Line 119
+	*** 0000a4	26 c7 44 12 00 00 	mov	WORD PTR es:[si+18],0
+;|*** 
+;|***         if (PhysToVirt( (ULONG) rp->s.ReadWrite.buffer,
+;|***            1,0,&appl_ptr))
+; Line 122
+	*** 0000aa	26 ff 74 10 		push	WORD PTR es:[si+16]
+	*** 0000ae	26 ff 74 0e 		push	WORD PTR es:[si+14]
+	*** 0000b2	6a 01 			push	1
+	*** 0000b4	6a 00 			push	0
+	*** 0000b6	1e 			push	ds
+	*** 0000b7	68 32 00 		push	OFFSET DGROUP:_appl_ptr
+	*** 0000ba	e8 00 00 		call	PHYSTOVIRT
+	*** 0000bd	0b c0 			or	ax,ax
+	*** 0000bf	75 b9 			jne	$L20004
+;|***              return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***         if (MoveBytes(appl_ptr,&output_char,1)) /* move 1 byte */
+; Line 125
+	*** 0000c1	ff 36 34 00 		push	WORD PTR _appl_ptr+2
+	*** 0000c5	ff 36 32 00 		push	WORD PTR _appl_ptr
+	*** 0000c9	1e 			push	ds
+	*** 0000ca	68 00 00 		push	OFFSET DGROUP:_output_char
+	*** 0000cd	6a 01 			push	1
+	*** 0000cf	e8 00 00 		call	MOVEBYTES
+	*** 0000d2	0b c0 			or	ax,ax
+	*** 0000d4	75 a4 			jne	$L20004
+;|***              return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***         outp (DIGIO_OUTPUT,output_char); /* send byte          */
+; Line 128
+	*** 0000d6	a0 00 00 		mov	al,BYTE PTR _output_char
+	*** 0000d9	98 			cbw	
+	*** 0000da	ba c0 02 		mov	dx,704
+	*** 0000dd	ee 			out	dx, al
+
+	*** 0000de	eb b5 			jmp	SHORT $I367
+;|*** 
+;|***         rp->s.ReadWrite.count = 1; /* one byte written         */
+;|***         return (RPDONE);
+;|*** 
+;|***     case RPOPEN:                 /* 0x0d open driver           */
+; Line 133
+					$SC371:
+;|*** 
+;|***         /* get current process id */
+;|*** 
+;|***         if (GetDOSVar(2,&ptr))
+; Line 137
+	*** 0000e0	6a 02 			push	2
+	*** 0000e2	8d 46 f8 		lea	ax,WORD PTR [bp-8]	;ptr
+	*** 0000e5	16 			push	ss
+	*** 0000e6	50 			push	ax
+	*** 0000e7	e8 00 00 		call	GETDOSVAR
+	*** 0000ea	0b c0 			or	ax,ax
+	*** 0000ec	74 03 			je	$JCC236
+	*** 0000ee	e9 a7 01 		jmp	$SC401
+					$JCC236:
+;|***             return (RPDONE | RPERR | ERROR_BAD_COMMAND);
+;|*** 
+;|***         /* get process info */
+;|*** 
+;|***         liptr = *((PLINFOSEG far *) ptr);
+; Line 142
+	*** 0000f1	c4 5e f8 		les	bx,DWORD PTR [bp-8]	;ptr
+	*** 0000f4	26 8b 07 		mov	ax,WORD PTR es:[bx]
+	*** 0000f7	26 8b 57 02 		mov	dx,WORD PTR es:[bx+2]
+	*** 0000fb	8b f0 			mov	si,ax
+	*** 0000fd	89 56 fe 		mov	WORD PTR [bp-2],dx
+;|*** 
+;|***         /* if this device never opened, can be opened by anyone*/
+;|*** 
+;|***         if (opencount == 0)      /* first time this dev opened */
+; Line 146
+	*** 000100	80 3e 22 00 00 		cmp	BYTE PTR _opencount,0
+	*** 000105	75 0f 			jne	$I373
+;|***         {
+;|***             opencount=1;         /* bump open counter          */
+; Line 148
+	*** 000107	c6 06 22 00 01 		mov	BYTE PTR _opencount,1
+;|***             savepid = liptr->pidCurrent; /* save current PID   */
+; Line 149
+	*** 00010c	8e c2 			mov	es,dx
+	*** 00010e	26 8b 04 		mov	ax,WORD PTR es:[si]
+	*** 000111	a3 24 00 		mov	WORD PTR _savepid,ax
+;|***         }
+;|***         else
+; Line 151
+	*** 000114	eb 88 			jmp	SHORT $L20005
+					$I373:
+;|***             {
+;|***             if (savepid != liptr->pidCurrent) /* another proc  */
+; Line 153
+	*** 000116	a1 24 00 		mov	ax,WORD PTR _savepid
+	*** 000119	8e c2 			mov	es,dx
+	*** 00011b	26 39 04 		cmp	WORD PTR es:[si],ax
+	*** 00011e	74 06 			je	$I375
+;|***                 return (RPDONE | RPERR | ERROR_NOT_READY);/*err*/
+; Line 154
+	*** 000120	b8 02 81 		mov	ax,-32510
+	*** 000123	5e 			pop	si
+	*** 000124	c9 			leave	
+	*** 000125	c3 			ret	
+;|***             ++opencount;         /* bump counter, same pid     */
+; Line 155
+					$I375:
+	*** 000126	fe 06 22 00 		inc	BYTE PTR _opencount
+;|***         }
+; Line 156
+	*** 00012a	e9 71 ff 		jmp	$L20005
+	*** 00012d	90 			nop	
+;|***         return (RPDONE);
+;|*** 
+;|***     case RPCLOSE:                /* 0x0e DosClose,ctl-C, kill  */
+; Line 159
+					$SC376:
+;|*** 
+;|***         /* get process info of caller */
+;|*** 
+;|***         if (GetDOSVar(2,&ptr))
+; Line 163
+	*** 00012e	6a 02 			push	2
+	*** 000130	8d 46 f8 		lea	ax,WORD PTR [bp-8]	;ptr
+	*** 000133	16 			push	ss
+	*** 000134	50 			push	ax
+	*** 000135	e8 00 00 		call	GETDOSVAR
+	*** 000138	0b c0 			or	ax,ax
+	*** 00013a	74 03 			je	$JCC314
+	*** 00013c	e9 59 01 		jmp	$SC401
+					$JCC314:
+;|***             return (RPDONE | RPERR | ERROR_BAD_COMMAND); 
+;|*** 
+;|***         /* get process info from os/2 */
+;|*** 
+;|***         liptr= *((PLINFOSEG far *) ptr); /* ptr to linfoseg    */
+;|*** 
+;|***         /* 
+;|***         make sure that process attempting to close this device
+;|***         is the one that originally opened it and the device was
+;|***         open in the first place.
+;|***         */
+;|*** 
+;|***         if (savepid != liptr->pidCurrent || opencount == 0)  
+; Line 176
+	*** 00013f	a1 24 00 		mov	ax,WORD PTR _savepid
+	*** 000142	c4 5e f8 		les	bx,DWORD PTR [bp-8]	;ptr
+	*** 000145	26 c4 1f 		les	bx,DWORD PTR es:[bx]
+	*** 000148	26 39 07 		cmp	WORD PTR es:[bx],ax
+	*** 00014b	74 03 			je	$JCC331
+	*** 00014d	e9 48 01 		jmp	$SC401
+					$JCC331:
+	*** 000150	80 3e 22 00 00 		cmp	BYTE PTR _opencount,0
+	*** 000155	75 03 			jne	$JCC341
+	*** 000157	e9 3e 01 		jmp	$SC401
+					$JCC341:
+;|***             return (RPDONE | RPERR | ERROR_BAD_COMMAND);
+;|*** 
+;|***         --opencount;             /* close counts down open cntr*/
+; Line 179
+	*** 00015a	fe 0e 22 00 		dec	BYTE PTR _opencount
+	*** 00015e	e9 3d ff 		jmp	$L20005
+	*** 000161	90 			nop	
+					$SC380:
+;|***          return (RPDONE);        /* return 'done' status       */
+;|*** 
+;|***     case RPIOCTL:                /* 0x10                       */
+;|*** 
+;|***         /*
+;|***         The function code in an IOCtl packet has the high bit set
+;|***         for the DIGIO$ board. We return all others with the done
+;|***         bit set so we don't have to handle things like the 5-48
+;|***         code page IOCtl
+;|***         */
+;|*** 
+;|***         if (rp->s.IOCtl.category != DIGIO_CAT)/* other IOCtls  */
+; Line 191
+	*** 000162	26 80 7c 0d 91 		cmp	BYTE PTR es:[si+13],145
+	*** 000167	74 03 			je	$JCC359
+	*** 000169	e9 2c 01 		jmp	$SC401
+					$JCC359:
+;|***             return (RPDONE | RPERR | ERROR_BAD_COMMAND);
+;|*** 
+;|***         switch (rp->s.IOCtl.function)
+; Line 194
+	*** 00016c	26 8a 44 0e 		mov	al,BYTE PTR es:[si+14]
+	*** 000170	2a e4 			sub	ah,ah
+;|***         {
+;|*** 
+;|***         case 0x01:               /* write byte to digio port   */
+;|*** 
+;|***             /* verify caller owns this buffer area */
+;|*** 
+;|***             if(VerifyAccess(
+;|***             SELECTOROF(rp->s.IOCtl.parameters), /* selector    */
+;|***             OFFSETOF(rp->s.IOCtl.parameters),   /* offset      */
+;|***             1,                                  /* 1 byte      */
+;|***             0) )                                /* read only   */
+;|***                 return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             if(MoveBytes(rp->s.IOCtl.parameters,&output_char,1))
+;|***                 return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             outp(DIGIO_OUTPUT,output_char);     /*send to digio*/
+;|***             return (RPDONE);
+;|*** 
+;|***         case 0x02:               /* read byte w/wait from port */
+;|*** 
+;|***             /* verify caller owns this buffer area */
+;|*** 
+;|***             if(VerifyAccess(
+;|***             SELECTOROF(rp->s.IOCtl.buffer), /* selector        */
+;|***             OFFSETOF(rp->s.IOCtl.buffer),   /* offset          */
+;|***             1,                              /* 1 bytes)        */
+;|***             0))                             /* read only       */
+;|***                return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* lock the segment down temp */
+;|*** 
+;|***             if(LockSeg(
+;|***             SELECTOROF(rp->s.IOCtl.buffer), /* selector        */
+;|***             1,                              /* lock forever    */
+;|***             0,                              /* wait for seg loc*/
+;|***             (PLHANDLE) &lock_seg_han))      /* handle returned */
+;|***                return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             if(MoveBytes(rp->s.IOCtl.parameters,&input_mask,1))
+;|***                 return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* wait for switch to be pressed */
+;|***  
+;|***             ReadID = (ULONG)rp;             /* block ID        */
+;|***             if (Block(ReadID,-1L,0,&err))
+;|***               if (err == 2)
+;|***                 return(RPDONE | RPERR
+;|***                        | ERROR_CHAR_CALL_INTERRUPTED);
+;|***             
+;|***             /* move data to users buffer */
+;|***  
+;|***             if(MoveBytes(&input_char,rp->s.IOCtl.buffer,1))
+;|***                 return(RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* unlock segment */
+;|*** 
+;|***             if(UnLockSeg(lock_seg_han))
+;|***                 return(RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|***  
+;|***             return (RPDONE);
+;|*** 
+;|***         case 0x03:               /* read byte immed digio port */
+;|*** 
+;|***             /* verify caller owns this buffer area */
+;|*** 
+;|***             if(VerifyAccess(
+;|***             SELECTOROF(rp->s.IOCtl.buffer), /* selector        */
+;|***             OFFSETOF(rp->s.IOCtl.buffer),   /* offset          */
+;|***             4,                              /* 4 bytes         */
+;|***             0))                             /* read only       */
+;|***                 return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             input_char = inp(DIGIO_INPUT);  /* get data        */
+;|*** 
+;|***             if(MoveBytes(&input_char,rp->s.IOCtl.buffer,1))
+;|***                 return(RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             return (RPDONE);
+;|*** 
+;|***         default:
+;|***             return(RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|***         }
+; Line 277
+	*** 000172	48 			dec	ax
+	*** 000173	74 0d 			je	$SC386
+	*** 000175	48 			dec	ax
+	*** 000176	74 46 			je	$SC389
+	*** 000178	48 			dec	ax
+	*** 000179	75 03 			jne	$JCC377
+	*** 00017b	e9 de 00 		jmp	$SC397
+					$JCC377:
+;|***         default:
+; Line 275
+	*** 00017e	e9 f9 fe 		jmp	$L20004
+	*** 000181	90 			nop	
+;|***         case 0x01:               /* write byte to digio port   */
+; Line 197
+					$SC386:
+;|*** 
+;|***             /* verify caller owns this buffer area */
+;|*** 
+;|***             if(VerifyAccess(
+;|***             SELECTOROF(rp->s.IOCtl.parameters), /* selector    */
+;|***             OFFSETOF(rp->s.IOCtl.parameters),   /* offset      */
+;|***             1,                                  /* 1 byte      */
+;|***             0) )                                /* read only   */
+; Line 205
+	*** 000182	26 ff 74 11 		push	WORD PTR es:[si+17]
+	*** 000186	26 ff 74 0f 		push	WORD PTR es:[si+15]
+	*** 00018a	6a 01 			push	1
+	*** 00018c	6a 00 			push	0
+	*** 00018e	e8 00 00 		call	VERIFYACCESS
+	*** 000191	0b c0 			or	ax,ax
+	*** 000193	74 03 			je	$JCC403
+	*** 000195	e9 e2 fe 		jmp	$L20004
+					$JCC403:
+;|***                 return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             if(MoveBytes(rp->s.IOCtl.parameters,&output_char,1))
+; Line 208
+	*** 000198	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 00019b	26 ff 74 11 		push	WORD PTR es:[si+17]
+	*** 00019f	26 ff 74 0f 		push	WORD PTR es:[si+15]
+	*** 0001a3	1e 			push	ds
+	*** 0001a4	68 00 00 		push	OFFSET DGROUP:_output_char
+	*** 0001a7	6a 01 			push	1
+	*** 0001a9	e8 00 00 		call	MOVEBYTES
+	*** 0001ac	0b c0 			or	ax,ax
+	*** 0001ae	74 03 			je	$JCC430
+	*** 0001b0	e9 c7 fe 		jmp	$L20004
+					$JCC430:
+;|***                 return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             outp(DIGIO_OUTPUT,output_char);     /*send to digio*/
+; Line 211
+	*** 0001b3	a0 00 00 		mov	al,BYTE PTR _output_char
+	*** 0001b6	98 			cbw	
+	*** 0001b7	ba c0 02 		mov	dx,704
+	*** 0001ba	ee 			out	dx, al
+
+	*** 0001bb	e9 e0 fe 		jmp	$L20005
+;|***             return (RPDONE);
+;|*** 
+;|***         case 0x02:               /* read byte w/wait from port */
+; Line 214
+					$SC389:
+;|*** 
+;|***             /* verify caller owns this buffer area */
+;|*** 
+;|***             if(VerifyAccess(
+;|***             SELECTOROF(rp->s.IOCtl.buffer), /* selector        */
+;|***             OFFSETOF(rp->s.IOCtl.buffer),   /* offset          */
+;|***             1,                              /* 1 bytes)        */
+;|***             0))                             /* read only       */
+; Line 222
+	*** 0001be	26 ff 74 15 		push	WORD PTR es:[si+21]
+	*** 0001c2	26 ff 74 13 		push	WORD PTR es:[si+19]
+	*** 0001c6	6a 01 			push	1
+	*** 0001c8	6a 00 			push	0
+	*** 0001ca	e8 00 00 		call	VERIFYACCESS
+	*** 0001cd	0b c0 			or	ax,ax
+	*** 0001cf	74 03 			je	$JCC463
+	*** 0001d1	e9 a6 fe 		jmp	$L20004
+					$JCC463:
+;|***                return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* lock the segment down temp */
+;|*** 
+;|***             if(LockSeg(
+;|***             SELECTOROF(rp->s.IOCtl.buffer), /* selector        */
+;|***             1,                              /* lock forever    */
+;|***             0,                              /* wait for seg loc*/
+;|***             (PLHANDLE) &lock_seg_han))      /* handle returned */
+; Line 231
+	*** 0001d4	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 0001d7	26 ff 74 15 		push	WORD PTR es:[si+21]
+	*** 0001db	6a 01 			push	1
+	*** 0001dd	50 			push	ax
+	*** 0001de	1e 			push	ds
+	*** 0001df	68 00 00 		push	OFFSET DGROUP:_lock_seg_han
+	*** 0001e2	e8 00 00 		call	LOCKSEG
+	*** 0001e5	0b c0 			or	ax,ax
+	*** 0001e7	74 03 			je	$JCC487
+	*** 0001e9	e9 8e fe 		jmp	$L20004
+					$JCC487:
+;|***                return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             if(MoveBytes(rp->s.IOCtl.parameters,&input_mask,1))
+; Line 234
+	*** 0001ec	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 0001ef	26 ff 74 11 		push	WORD PTR es:[si+17]
+	*** 0001f3	26 ff 74 0f 		push	WORD PTR es:[si+15]
+	*** 0001f7	1e 			push	ds
+	*** 0001f8	68 00 00 		push	OFFSET DGROUP:_input_mask
+	*** 0001fb	6a 01 			push	1
+	*** 0001fd	e8 00 00 		call	MOVEBYTES
+	*** 000200	0b c0 			or	ax,ax
+	*** 000202	74 03 			je	$JCC514
+	*** 000204	e9 73 fe 		jmp	$L20004
+					$JCC514:
+;|***                 return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* wait for switch to be pressed */
+;|***  
+;|***             ReadID = (ULONG)rp;             /* block ID        */
+;|***             if (Block(ReadID,-1L,0,&err))
+; Line 240
+	*** 000207	8b c6 			mov	ax,si
+	*** 000209	8b 56 06 		mov	dx,WORD PTR [bp+6]
+	*** 00020c	a3 2c 00 		mov	WORD PTR _ReadID,ax
+	*** 00020f	89 16 2e 00 		mov	WORD PTR _ReadID+2,dx
+	*** 000213	52 			push	dx
+	*** 000214	50 			push	ax
+	*** 000215	6a ff 			push	-1
+	*** 000217	6a ff 			push	-1
+	*** 000219	6a 00 			push	0
+	*** 00021b	1e 			push	ds
+	*** 00021c	68 2a 00 		push	OFFSET DGROUP:_err
+	*** 00021f	e8 00 00 		call	BLOCK
+	*** 000222	0b c0 			or	ax,ax
+	*** 000224	74 0e 			je	$I393
+;|***               if (err == 2)
+; Line 241
+	*** 000226	83 3e 2a 00 02 		cmp	WORD PTR _err,2
+	*** 00022b	75 07 			jne	$I393
+;|***                 return(RPDONE | RPERR
+;|***                        | ERROR_CHAR_CALL_INTERRUPTED);
+; Line 243
+	*** 00022d	b8 11 81 		mov	ax,-32495
+	*** 000230	5e 			pop	si
+	*** 000231	c9 			leave	
+	*** 000232	c3 			ret	
+	*** 000233	90 			nop	
+;|***             
+;|***             /* move data to users buffer */
+;|***  
+;|***             if(MoveBytes(&input_char,rp->s.IOCtl.buffer,1))
+; Line 247
+					$I393:
+	*** 000234	1e 			push	ds
+	*** 000235	68 00 00 		push	OFFSET DGROUP:_input_char
+	*** 000238	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 00023b	26 ff 74 15 		push	WORD PTR es:[si+21]
+	*** 00023f	26 ff 74 13 		push	WORD PTR es:[si+19]
+	*** 000243	6a 01 			push	1
+	*** 000245	e8 00 00 		call	MOVEBYTES
+	*** 000248	0b c0 			or	ax,ax
+	*** 00024a	74 03 			je	$JCC586
+	*** 00024c	e9 2b fe 		jmp	$L20004
+					$JCC586:
+;|***                 return(RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             /* unlock segment */
+;|*** 
+;|***             if(UnLockSeg(lock_seg_han))
+; Line 252
+	*** 00024f	ff 36 02 00 		push	WORD PTR _lock_seg_han+2
+	*** 000253	ff 36 00 00 		push	WORD PTR _lock_seg_han
+	*** 000257	e8 00 00 		call	UNLOCKSEG
+	*** 00025a	eb 31 			jmp	SHORT $L20006
+					$SC397:
+;|***                 return(RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|***  
+;|***             return (RPDONE);
+;|*** 
+;|***         case 0x03:               /* read byte immed digio port */
+;|*** 
+;|***             /* verify caller owns this buffer area */
+;|*** 
+;|***             if(VerifyAccess(
+;|***             SELECTOROF(rp->s.IOCtl.buffer), /* selector        */
+;|***             OFFSETOF(rp->s.IOCtl.buffer),   /* offset          */
+;|***             4,                              /* 4 bytes         */
+;|***             0))                             /* read only       */
+; Line 265
+	*** 00025c	26 ff 74 15 		push	WORD PTR es:[si+21]
+	*** 000260	26 ff 74 13 		push	WORD PTR es:[si+19]
+	*** 000264	6a 04 			push	4
+	*** 000266	6a 00 			push	0
+	*** 000268	e8 00 00 		call	VERIFYACCESS
+	*** 00026b	0b c0 			or	ax,ax
+	*** 00026d	74 03 			je	$JCC621
+	*** 00026f	e9 08 fe 		jmp	$L20004
+					$JCC621:
+;|***                 return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             input_char = inp(DIGIO_INPUT);  /* get data        */
+; Line 268
+	*** 000272	ba c1 02 		mov	dx,705
+	*** 000275	ec 			in	al,dx
+	*** 000276	a2 00 00 		mov	BYTE PTR _input_char,al
+;|*** 
+;|***             if(MoveBytes(&input_char,rp->s.IOCtl.buffer,1))
+; Line 270
+	*** 000279	1e 			push	ds
+	*** 00027a	68 00 00 		push	OFFSET DGROUP:_input_char
+	*** 00027d	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 000280	26 ff 74 15 		push	WORD PTR es:[si+21]
+	*** 000284	26 ff 74 13 		push	WORD PTR es:[si+19]
+	*** 000288	6a 01 			push	1
+	*** 00028a	e8 00 00 		call	MOVEBYTES
+					$L20006:
+	*** 00028d	0b c0 			or	ax,ax
+	*** 00028f	75 03 			jne	$JCC655
+	*** 000291	e9 0a fe 		jmp	$L20005
+					$JCC655:
+	*** 000294	e9 e3 fd 		jmp	$L20004
+	*** 000297	90 			nop	
+					$SC401:
+;|***                 return(RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|*** 
+;|***             return (RPDONE);
+;|*** 
+;|***         default:
+;|***             return(RPDONE | RPERR | ERROR_GEN_FAILURE);
+;|***         }
+;|*** 
+;|***         /* don't allow deinstall */
+;|*** 
+;|***     case RPDEINSTALL:            /* 0x14                       */
+;|***         return(RPDONE | RPERR | ERROR_BAD_COMMAND);
+; Line 282
+					$L20003:
+	*** 000298	b8 03 81 		mov	ax,-32509
+;|*** 
+;|***         /* all other commands are flagged as bad */
+;|*** 
+;|***     default:
+;|***         return(RPDONE | RPERR | ERROR_BAD_COMMAND);
+;|*** 
+;|***     }
+;|*** }
+; Line 290
+	*** 00029b	5e 			pop	si
+	*** 00029c	c9 			leave	
+	*** 00029d	c3 			ret	
+
+_main	ENDP
+;|*** 
+;|*** timr_handler()
+;|*** {
+; Line 293
+	PUBLIC	_timr_handler
+_timr_handler	PROC NEAR
+;|*** 
+;|***    if (ReadID != 0) {
+; Line 295
+	*** 00029e	a1 2e 00 		mov	ax,WORD PTR _ReadID+2
+	*** 0002a1	0b 06 2c 00 		or	ax,WORD PTR _ReadID
+	*** 0002a5	74 30 			je	$EX404
+;|***       
+;|***       /* read data from port */
+;|***       
+;|***       input_char = inp(DIGIO_INPUT );/* get data               */
+;|*** 
+;|***       if ((input_char && input_mask) !=0) {
+; Line 301
+	*** 0002a7	ba c1 02 		mov	dx,705
+	*** 0002aa	ec 			in	al,dx
+	*** 0002ab	a2 00 00 		mov	BYTE PTR _input_char,al
+	*** 0002ae	0a c0 			or	al,al
+	*** 0002b0	74 0c 			je	$L20001
+	*** 0002b2	80 3e 00 00 00 		cmp	BYTE PTR _input_mask,0
+	*** 0002b7	74 05 			je	$L20001
+	*** 0002b9	ba 01 00 		mov	dx,1
+	*** 0002bc	eb 02 			jmp	SHORT $L20002
+					$L20001:
+	*** 0002be	2b d2 			sub	dx,dx
+					$L20002:
+	*** 0002c0	0b d2 			or	dx,dx
+	*** 0002c2	74 13 			je	$EX404
+;|***          Run (ReadID);
+; Line 302
+	*** 0002c4	ff 36 2e 00 		push	WORD PTR _ReadID+2
+	*** 0002c8	ff 36 2c 00 		push	WORD PTR _ReadID
+	*** 0002cc	e8 00 00 		call	RUN
+;|***          ReadID=0L;
+; Line 303
+	*** 0002cf	2b c0 			sub	ax,ax
+	*** 0002d1	a3 2e 00 		mov	WORD PTR _ReadID+2,ax
+	*** 0002d4	a3 2c 00 		mov	WORD PTR _ReadID,ax
+;|***          }
+;|***     }
+;|*** }
+; Line 306
+					$EX404:
+	*** 0002d7	c3 			ret	
+
+_timr_handler	ENDP
+;|*** 
+;|*** /* Device Initialization Routine */
+;|*** 
+;|*** int Init(PREQPACKET rp)
+;|*** {
+; Line 311
+	PUBLIC	_Init
+_Init	PROC NEAR
+	*** 0002d8	55 			push	bp
+	*** 0002d9	8b ec 			mov	bp,sp
+	*** 0002db	57 			push	di
+	*** 0002dc	56 			push	si
+;	rp = 4
+	*** 0002dd	8b 76 04 		mov	si,WORD PTR [bp+4]	;rp
+;|***     /* store DevHlp entry point */
+;|*** 
+;|***     DevHlp = rp->s.Init.DevHlp;
+; Line 314
+	*** 0002e0	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 0002e3	26 8b 44 0e 		mov	ax,WORD PTR es:[si+14]
+	*** 0002e7	26 8b 54 10 		mov	dx,WORD PTR es:[si+16]
+	*** 0002eb	a3 1e 00 		mov	WORD PTR _DevHlp,ax
+	*** 0002ee	89 16 20 00 		mov	WORD PTR _DevHlp+2,dx
+;|*** 
+;|***     /* install timer handler */
+;|*** 
+;|***     if(SetTimer((PFUNCTION)TIMER_HANDLER)) {
+; Line 318
+	*** 0002f2	68 00 00 		push	OFFSET _TIMER_HANDLER
+	*** 0002f5	e8 00 00 		call	SETTIMER
+	*** 0002f8	0b c0 			or	ax,ax
+	*** 0002fa	74 3e 			je	$I409
+;|*** 
+;|***       /* if we failed, effectively deinstall driver with cs+ds=0 */
+;|*** 
+;|***       DosPutMessage(1, 8, devhdr.DHname);
+; Line 322
+	*** 0002fc	6a 01 			push	1
+	*** 0002fe	6a 08 			push	8
+	*** 000300	1e 			push	ds
+	*** 000301	68 0a 00 		push	OFFSET DGROUP:_devhdr+10
+	*** 000304	9a 00 00 00 00 		call	FAR PTR DOSPUTMESSAGE
+;|***       DosPutMessage(1,strlen(FailMessage),FailMessage);
+; Line 323
+	*** 000309	6a 01 			push	1
+	*** 00030b	b8 62 00 		mov	ax,OFFSET DGROUP:_FailMessage
+	*** 00030e	8b d0 			mov	dx,ax
+	*** 000310	8b f8 			mov	di,ax
+	*** 000312	1e 			push	ds
+	*** 000313	07 			pop	es
+	*** 000314	b9 ff ff 		mov	cx,-1
+	*** 000317	33 c0 			xor	ax,ax
+	*** 000319	f2 			repnz
+	*** 00031a	ae 			scasb
+	*** 00031b	f7 d1 			not	cx
+	*** 00031d	49 			dec	cx
+	*** 00031e	51 			push	cx
+	*** 00031f	1e 			push	ds
+	*** 000320	52 			push	dx
+	*** 000321	9a 00 00 00 00 		call	FAR PTR DOSPUTMESSAGE
+;|***       rp->s.InitExit.finalCS = (OFF) 0;
+;|***       rp->s.InitExit.finalDS = (OFF) 0;
+; Line 325
+	*** 000326	2b c0 			sub	ax,ax
+	*** 000328	8e 46 06 		mov	es,WORD PTR [bp+6]
+	*** 00032b	26 89 44 0e 		mov	WORD PTR es:[si+14],ax
+	*** 00032f	26 89 44 10 		mov	WORD PTR es:[si+16],ax
+;|***       return (RPDONE | RPERR | ERROR_GEN_FAILURE);
+; Line 326
+	*** 000333	b8 0c 81 		mov	ax,-32500
+	*** 000336	5e 			pop	si
+	*** 000337	5f 			pop	di
+	*** 000338	c9 			leave	
+	*** 000339	c3 			ret	
+;|***       }
+;|*** 
+;|***     /* configure 8255 parallel chip */
+;|*** 
+;|***     outp (DIGIO_CONFIG,0x91);
+; Line 331
+					$I409:
+	*** 00033a	b8 91 00 		mov	ax,145
+	*** 00033d	ba c3 02 		mov	dx,707
+	*** 000340	ee 			out	dx, al
+
+;|*** 
+;|***     /* output initialization message */
+;|*** 
+;|***     DosPutMessage(1, 2, CrLf);
+; Line 335
+	*** 000341	6a 01 			push	1
+	*** 000343	6a 02 			push	2
+	*** 000345	1e 			push	ds
+	*** 000346	68 36 00 		push	OFFSET DGROUP:_CrLf
+	*** 000349	9a 00 00 00 00 		call	FAR PTR DOSPUTMESSAGE
+;|***     DosPutMessage(1, 8, devhdr.DHname);
+; Line 336
+	*** 00034e	6a 01 			push	1
+	*** 000350	6a 08 			push	8
+	*** 000352	1e 			push	ds
+	*** 000353	68 0a 00 		push	OFFSET DGROUP:_devhdr+10
+	*** 000356	9a 00 00 00 00 		call	FAR PTR DOSPUTMESSAGE
+;|***     DosPutMessage(1, strlen(InitMessage1), InitMessage1);
+; Line 337
+	*** 00035b	6a 01 			push	1
+	*** 00035d	b8 3a 00 		mov	ax,OFFSET DGROUP:_InitMessage1
+	*** 000360	8b d0 			mov	dx,ax
+	*** 000362	8b f8 			mov	di,ax
+	*** 000364	1e 			push	ds
+	*** 000365	07 			pop	es
+	*** 000366	b9 ff ff 		mov	cx,-1
+	*** 000369	33 c0 			xor	ax,ax
+	*** 00036b	f2 			repnz
+	*** 00036c	ae 			scasb
+	*** 00036d	f7 d1 			not	cx
+	*** 00036f	49 			dec	cx
+	*** 000370	51 			push	cx
+	*** 000371	1e 			push	ds
+	*** 000372	52 			push	dx
+	*** 000373	9a 00 00 00 00 		call	FAR PTR DOSPUTMESSAGE
+;|***     DosPutMessage(1, strlen(InitMessage2), InitMessage2);
+; Line 338
+	*** 000378	6a 01 			push	1
+	*** 00037a	b8 4e 00 		mov	ax,OFFSET DGROUP:_InitMessage2
+	*** 00037d	8b d0 			mov	dx,ax
+	*** 00037f	8b f8 			mov	di,ax
+	*** 000381	1e 			push	ds
+	*** 000382	07 			pop	es
+	*** 000383	b9 ff ff 		mov	cx,-1
+	*** 000386	33 c0 			xor	ax,ax
+	*** 000388	f2 			repnz
+	*** 000389	ae 			scasb
+	*** 00038a	f7 d1 			not	cx
+	*** 00038c	49 			dec	cx
+	*** 00038d	51 			push	cx
+	*** 00038e	1e 			push	ds
+	*** 00038f	52 			push	dx
+	*** 000390	9a 00 00 00 00 		call	FAR PTR DOSPUTMESSAGE
+;|*** 
+;|***     /* send back our code and data end values to os/2 */
+;|*** 
+;|***     if (SegLimit(HIUSHORT((void far *) Init),
+;|***       &rp->s.InitExit.finalCS) || SegLimit(HIUSHORT((void far *)
+; Line 343
+	*** 000395	0e 			push	cs
+	*** 000396	8b c6 			mov	ax,si
+	*** 000398	8b 56 06 		mov	dx,WORD PTR [bp+6]
+	*** 00039b	05 0e 00 		add	ax,14
+	*** 00039e	52 			push	dx
+	*** 00039f	50 			push	ax
+	*** 0003a0	e8 00 00 		call	SEGLIMIT
+	*** 0003a3	0b c0 			or	ax,ax
+	*** 0003a5	75 10 			jne	$I411
+	*** 0003a7	1e 			push	ds
+	*** 0003a8	8b 4e 06 		mov	cx,WORD PTR [bp+6]
+	*** 0003ab	83 c6 10 		add	si,16
+	*** 0003ae	51 			push	cx
+	*** 0003af	56 			push	si
+	*** 0003b0	e8 00 00 		call	SEGLIMIT
+	*** 0003b3	0b c0 			or	ax,ax
+	*** 0003b5	74 03 			je	$I410
+					$I411:
+;|***       InitMessage2), &rp->s.InitExit.finalDS))
+;|***         Abort();
+; Line 345
+	*** 0003b7	e8 00 00 		call	ABORT
+;|***     return(RPDONE);
+; Line 346
+					$I410:
+	*** 0003ba	b8 00 01 		mov	ax,256
+;|*** }
+; Line 347
+	*** 0003bd	5e 			pop	si
+	*** 0003be	5f 			pop	di
+	*** 0003bf	c9 			leave	
+	*** 0003c0	c3 			ret	
+	*** 0003c1	90 			nop	
+
+_Init	ENDP
+_TEXT	ENDS
+END
+;|***  

@@ -1,0 +1,146 @@
+
+ SAMPLE
+
+ Start     Length     Name                   Class
+ 0001:0000 00091H     _DATA                  DATA
+ 0001:0092 00000H     CONST                  CONST
+ 0001:0092 00000H     _BSS                   BSS
+ 0001:00A0 00452H     c_common               BSS
+ 0002:0000 00A88H     _TEXT                  CODE
+
+ Origin   Group
+ 0001:0   DGROUP
+
+  Address         Publics by Name
+
+ 0002:0856       ABORT
+ 0002:085C       BLOCK
+ 0002:089A       DISABLE
+ 0000:0000  Imp  DOSPUTMESSAGE        (MSG.1)
+ 0002:089C       ENABLE
+ 0002:089E       GETDOSVAR
+ 0002:08C8       LOCKSEG
+ 0002:0A54       MOVEBYTES
+ 0002:091A       QUEUEFLUSH
+ 0002:092A       QUEUEINIT
+ 0002:0958       QUEUEREAD
+ 0002:093A       QUEUEWRITE
+ 0002:097A       RUN
+ 0002:08F8       SEGLIMIT
+ 0002:098E       SETIRQ
+ 0002:09B0       SETTIMER
+ 0002:09CC       UNLOCKSEG
+ 0002:09EA       UNPHYSTOVIRT
+ 0002:09FA       VERIFYACCESS
+ 0002:0A22       VIRTTOPHYS
+ 0001:0022       _appl_buffer
+ 0001:04AC       _baud_rate
+ 0001:04F0       _com_error_word
+ 0002:04CE       _config_82050
+ 0001:0000       _devhdr
+ 0001:001E       _DevHlp
+ 0002:04A0       _disable_write
+ 0002:047C       _enable_write
+ 0001:002A       _err
+ 0002:05D8       _getsrc
+ 0001:04B2       _hptr
+ 0001:04C0       _i
+ 0001:04B0       _inchar
+ 0002:0776       _Init
+ 0002:04C2       _init
+ 0002:061A       _interrupt_handler
+ 0001:003C       _IntFailMsg
+ 0002:0013       _INT_HNDLR
+ 0001:04C4       _lock_seg_han
+ 0002:0022       _main
+ 0001:0064       _MainMsg
+ 0001:04C2       _opencount
+ 0001:04C8       _outchar
+ 0001:0026       _p
+ 0001:04BE       _port
+ 0001:04EC       _ptr
+ 0001:0030       _ReadID
+ 0002:05F4       _reset_dlab
+ 0001:04BA       _rqueue
+ 0001:00A0       _rx_queue
+ 0001:04B8       _savepid
+ 0002:05E4       _set_bank
+ 0002:05B0       _set_dlab
+ 0002:0000       _STRAT
+ 0001:04AE       _temp_bank
+ 0001:0034       _ThisReadRP
+ 0001:0038       _ThisWriteRP
+ 0001:04B4       _tickcount
+ 0002:0732       _timer_handler
+ 0002:0017       _TIM_HNDLR
+ 0001:02A6       _tx_queue
+ 0001:04CA       _uart_regs
+ 0001:002C       _WriteID
+ 0002:0000       __acrtused
+
+  Address         Publics by Value
+
+ 0000:0000  Imp  DOSPUTMESSAGE        (MSG.1)
+ 0001:0000       _devhdr
+ 0001:001E       _DevHlp
+ 0001:0022       _appl_buffer
+ 0001:0026       _p
+ 0001:002A       _err
+ 0001:002C       _WriteID
+ 0001:0030       _ReadID
+ 0001:0034       _ThisReadRP
+ 0001:0038       _ThisWriteRP
+ 0001:003C       _IntFailMsg
+ 0001:0064       _MainMsg
+ 0001:00A0       _rx_queue
+ 0001:02A6       _tx_queue
+ 0001:04AC       _baud_rate
+ 0001:04AE       _temp_bank
+ 0001:04B0       _inchar
+ 0001:04B2       _hptr
+ 0001:04B4       _tickcount
+ 0001:04B8       _savepid
+ 0001:04BA       _rqueue
+ 0001:04BE       _port
+ 0001:04C0       _i
+ 0001:04C2       _opencount
+ 0001:04C4       _lock_seg_han
+ 0001:04C8       _outchar
+ 0001:04CA       _uart_regs
+ 0001:04EC       _ptr
+ 0001:04F0       _com_error_word
+ 0002:0000       _STRAT
+ 0002:0000       __acrtused
+ 0002:0013       _INT_HNDLR
+ 0002:0017       _TIM_HNDLR
+ 0002:0022       _main
+ 0002:047C       _enable_write
+ 0002:04A0       _disable_write
+ 0002:04C2       _init
+ 0002:04CE       _config_82050
+ 0002:05B0       _set_dlab
+ 0002:05D8       _getsrc
+ 0002:05E4       _set_bank
+ 0002:05F4       _reset_dlab
+ 0002:061A       _interrupt_handler
+ 0002:0732       _timer_handler
+ 0002:0776       _Init
+ 0002:0856       ABORT
+ 0002:085C       BLOCK
+ 0002:089A       DISABLE
+ 0002:089C       ENABLE
+ 0002:089E       GETDOSVAR
+ 0002:08C8       LOCKSEG
+ 0002:08F8       SEGLIMIT
+ 0002:091A       QUEUEFLUSH
+ 0002:092A       QUEUEINIT
+ 0002:093A       QUEUEWRITE
+ 0002:0958       QUEUEREAD
+ 0002:097A       RUN
+ 0002:098E       SETIRQ
+ 0002:09B0       SETTIMER
+ 0002:09CC       UNLOCKSEG
+ 0002:09EA       UNPHYSTOVIRT
+ 0002:09FA       VERIFYACCESS
+ 0002:0A22       VIRTTOPHYS
+ 0002:0A54       MOVEBYTES
